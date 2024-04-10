@@ -1,6 +1,6 @@
 {
   "name": "@caravan/psbt",
-  "version": "0.0.0",
+  "version": "1.0.1",
   "description": "typescript library for working with PSBTs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -8,7 +8,11 @@
   "engines": {
     "node": ">=20"
   },
-  "private": true,
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "private": false,
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts",
     "dev": "npm run build -- --watch",
