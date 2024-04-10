@@ -29,6 +29,7 @@ import {
 } from "../../actions/clientActions";
 
 import PrivateClientSettings from "./PrivateClientSettings";
+import PrivateUmbrelClientSettings from "./PrivateUmbrelClientSettings";
 
 const ClientPicker = ({
   setType,
@@ -72,8 +73,19 @@ const ClientPicker = ({
 
   const handleTypeChange = async (event) => {
     const clientType = event.target.value;
-    if (clientType === "private" && !urlEdited) {
+    if (clientType === ClientType.PRIVATE && !urlEdited) {
       setUrl(`http://localhost:${network === "mainnet" ? 8332 : 18332}`);
+    }
+    else if (clientType === ClientType.UMBREL && !urlEdited) {
+      const rpcUsername = process.env.REACT_APP_RPC_USERNAME;
+      const rpcPassword = process.env.REACT_APP_RPC_PASSWORD;
+      let username;
+      let password;
+      username = rpcUsername ? rpcUsername : 'umbrel';
+      password = rpcPassword ? rpcPassword : 'ajosindaidno2143782398njkcsdj';
+      setUrl("http://" + window.location.hostname + "/bitcoind");
+      setUsername(username);
+      setPassword(password);
     }
     setType(clientType);
     await updateBlockchainClient();
@@ -145,16 +157,40 @@ const ClientPicker = ({
                 checked={client.type === ClientType.BLOCKSTREAM}
               />
               <FormControlLabel
-                id="private"
+                id={ClientType.UMBREL}
                 control={<Radio color="primary" />}
                 name="clientType"
-                value="private"
-                label="Private"
+                value={ClientType.UMBREL}
+                label={<strong>Umbrel Node</strong>}
                 onChange={handleTypeChange}
-                checked={client.type === "private"}
+                checked={client.type === ClientType.UMBREL}
+              />
+              <FormControlLabel
+                id={ClientType.PRIVATE}
+                control={<Radio color="primary" />}
+                name="clientType"
+                value={ClientType.PRIVATE}
+                label="Other Private Node"
+                onChange={handleTypeChange}
+                checked={client.type === ClientType.PRIVATE}
               />
             </RadioGroup>
-            {client.type === "private" && (
+            {client.type === ClientType.UMBREL && (
+              <PrivateUmbrelClientSettings
+                handleUrlChange={(event) => handleUrlChange(event)}
+                handleUsernameChange={(event) => handleUsernameChange(event)}
+                handlePasswordChange={(event) => handlePasswordChange(event)}
+                client={client}
+                urlError={urlError}
+                usernameError={usernameError}
+                passwordError={passwordError}
+                privateNotes={privateNotes}
+                connectSuccess={connectSuccess}
+                connectError={connectError}
+                testConnection={() => testConnection()}
+              />
+            )}
+            {client.type === ClientType.PRIVATE && (
               <PrivateClientSettings
                 handleUrlChange={(event) => handleUrlChange(event)}
                 handleUsernameChange={(event) => handleUsernameChange(event)}

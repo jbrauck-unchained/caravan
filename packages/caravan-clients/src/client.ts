@@ -29,6 +29,7 @@ export enum ClientType {
   PRIVATE = "private",
   BLOCKSTREAM = "blockstream",
   MEMPOOL = "mempool",
+  UMBREL = "umbrel",
 }
 const delay = () => {
   return new Promise((resolve) => setTimeout(resolve, 500));
@@ -123,6 +124,8 @@ export class BlockchainClient extends ClientBase {
       host = "https://blockstream.info";
     } else if (type === ClientType.MEMPOOL) {
       host = "https://unchained.mempool.space";
+    } else if (type === ClientType.UMBREL) {
+      host = "http://" + window.location.hostname + "/bitcoind";
     }
     if (type !== ClientType.PRIVATE && network !== Network.MAINNET) {
       host += `/${network}`;
