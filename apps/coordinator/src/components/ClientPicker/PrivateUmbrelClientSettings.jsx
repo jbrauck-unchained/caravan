@@ -19,8 +19,8 @@ const PrivateUmbrelClientSettings = ({
 }) => (
   <div>
     <p>
-      This version of caravan is configured to work with Umbrel. 
-      A prerequisite is to have the bitcoin node installed and fully synced.
+      This version of caravan is configured to work with Umbrel. A prerequisite
+      is to have the bitcoin node installed and fully synced.
     </p>
     <p>
       <small>
