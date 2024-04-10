@@ -141,7 +141,7 @@ export class BlockchainClient extends ClientBase {
 
   public async getAddressUtxos(address: string): Promise<any> {
     try {
-      if (this.type === ClientType.PRIVATE) {
+      if (this.type === ClientType.PRIVATE || this.type === ClientType.UMBREL) {
         return bitcoindListUnspent({
           address,
           ...this.bitcoindParams,
@@ -157,7 +157,7 @@ export class BlockchainClient extends ClientBase {
 
   public async broadcastTransaction(rawTx: string): Promise<any> {
     try {
-      if (this.type === ClientType.PRIVATE) {
+      if (this.type === ClientType.PRIVATE || this.type === ClientType.UMBREL) {
         return bitcoindSendRawTransaction({
           hex: rawTx,
           ...this.bitcoindParams,
@@ -194,7 +194,7 @@ export class BlockchainClient extends ClientBase {
       fetchUTXOsError: "",
     };
     try {
-      if (this.type === ClientType.PRIVATE) {
+      if (this.type === ClientType.PRIVATE || this.type === ClientType.UMBREL) {
         unsortedUTXOs = await bitcoindListUnspent({
           ...this.bitcoindParams,
           address,
@@ -248,7 +248,7 @@ export class BlockchainClient extends ClientBase {
 
   public async getAddressStatus(address: string): Promise<any> {
     try {
-      if (this.type === ClientType.PRIVATE) {
+      if (this.type === ClientType.PRIVATE || this.type === ClientType.UMBREL) {
         return await bitcoindGetAddressStatus({
           address,
           ...this.bitcoindParams,
@@ -272,6 +272,11 @@ export class BlockchainClient extends ClientBase {
     try {
       switch (this.type) {
         case ClientType.PRIVATE:
+          return bitcoindEstimateSmartFee({
+            numBlocks: +blocks,
+            ...this.bitcoindParams,
+          });
+        case ClientType.UMBREL:
           return bitcoindEstimateSmartFee({
             numBlocks: +blocks,
             ...this.bitcoindParams,
@@ -300,7 +305,7 @@ export class BlockchainClient extends ClientBase {
 
   public async getTransactionHex(txid: string): Promise<any> {
     try {
-      if (this.type === ClientType.PRIVATE) {
+      if (this.type === ClientType.PRIVATE || this.type === ClientType.UMBREL) {
         return await callBitcoind(
           this.bitcoindParams.url,
           this.bitcoindParams.auth,
