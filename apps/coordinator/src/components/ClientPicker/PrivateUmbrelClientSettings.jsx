@@ -4,8 +4,6 @@ import PropTypes from "prop-types";
 // Components
 import { Grid, TextField, Button, FormHelperText, Box } from "@mui/material";
 
-import { externalLink } from "utils/ExternalLink";
-
 const PrivateUmbrelClientSettings = ({
   handleUrlChange,
   handleUsernameChange,
@@ -21,7 +19,8 @@ const PrivateUmbrelClientSettings = ({
 }) => (
   <div>
     <p>
-      This version of caravan is configured to work with Umbrel. A prerequisite is to have the bitcoin node installed and fully synced.
+      This version of caravan is configured to work with Umbrel. 
+      A prerequisite is to have the bitcoin node installed and fully synced.
     </p>
     <p>
       <small>

@@ -81,8 +81,8 @@ const ClientPicker = ({
       const rpcPassword = process.env.REACT_APP_RPC_PASSWORD;
       let username;
       let password;
-      username = rpcUsername ? rpcUsername : 'umbrel';
-      password = rpcPassword ? rpcPassword : 'ajosindaidno2143782398njkcsdj';
+      username = rpcUsername ? rpcUsername : "umbrel";
+      password = rpcPassword ? rpcPassword : "";
       setUrl("http://" + window.location.hostname + "/bitcoind");
       setUsername(username);
       setPassword(password);
