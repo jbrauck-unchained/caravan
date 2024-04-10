@@ -49,7 +49,11 @@ export async function fetchAddressUTXOs(address, network, client) {
   try {
     unsortedUTXOs = await fetchAddressUTXOsUnsorted(address, network, client);
   } catch (e) {
-    if ((client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && isWalletAddressNotFoundError(e)) {
+    if (
+      (client.type === ClientType.PRIVATE ||
+        client.type === ClientType.UMBREL) &&
+      isWalletAddressNotFoundError(e)
+    ) {
       updates = {
         utxos: [],
         balanceSats: BigNumber(0),
