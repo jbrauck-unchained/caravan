@@ -399,7 +399,7 @@ class WalletGenerator extends React.Component {
                   />
                 </Box>
               )}
-              {client.type === "private" && !unknownClient && (
+              {(client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && !unknownClient && (
                 <Box my={5}>
                   <Grid container spacing={2} alignItems="center">
                     <Grid item xs={12}>

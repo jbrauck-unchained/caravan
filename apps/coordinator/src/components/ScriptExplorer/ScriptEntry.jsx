@@ -48,6 +48,7 @@ import {
   setOwnershipMultisig as setOwnershipMultisigAction,
 } from "../../actions/ownershipActions";
 import { getBlockchainClientFromStore } from "../../actions/clientActions";
+import { ClientType } from "@caravan/clients";
 
 class ScriptEntry extends React.Component {
   constructor(props) {
@@ -191,7 +192,7 @@ class ScriptEntry extends React.Component {
           </Grid>
           <FormHelperText error>{fetchUTXOsError}</FormHelperText>
         </Box>
-        {client.type === "private" && (
+        {(client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && (
           <Box mt={2}>
             <ImportAddressesButton
               addresses={[multisig.address]}

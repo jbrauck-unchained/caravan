@@ -118,7 +118,7 @@ const WalletActionsPanel = ({
               </ButtonWithTooltip>
             </ButtonGroup>
           </Grid>
-          {client.type === "private" && walletActivated && (
+          {(client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && walletActivated && (
             <Grid item>
               <ImportAddressesButton
                 addresses={addresses}

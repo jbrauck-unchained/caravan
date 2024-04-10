@@ -206,7 +206,7 @@ export class BlockchainClient extends ClientBase {
         );
       }
     } catch (error: Error | any) {
-      if (this.type === "private" && isWalletAddressNotFoundError(error)) {
+      if ((this.type === ClientType.PRIVATE || this.type === ClientType.UMBREL) && isWalletAddressNotFoundError(error)) {
         updates = {
           utxos: [],
           balanceSats: BigNumber(0),

@@ -14,6 +14,7 @@ import {
   bitcoindGetAddressStatus,
   isWalletAddressNotFoundError,
 } from "./bitcoind";
+import { ClientType } from "@caravan/clients";
 
 export const BLOCK_EXPLORER = "public";
 export const BITCOIND = "private";
@@ -48,7 +49,7 @@ export async function fetchAddressUTXOs(address, network, client) {
   try {
     unsortedUTXOs = await fetchAddressUTXOsUnsorted(address, network, client);
   } catch (e) {
-    if (client.type === "private" && isWalletAddressNotFoundError(e)) {
+    if ((client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && isWalletAddressNotFoundError(e)) {
       updates = {
         utxos: [],
         balanceSats: BigNumber(0),

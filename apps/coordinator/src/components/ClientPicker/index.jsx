@@ -76,8 +76,8 @@ const ClientPicker = ({
     if (clientType === ClientType.PRIVATE && !urlEdited) {
       setUrl(`http://localhost:${network === "mainnet" ? 8332 : 18332}`);
     } else if (clientType === ClientType.UMBREL && !urlEdited) {
-      const rpcUsername = process.env.REACT_APP_RPC_USERNAME;
-      const rpcPassword = process.env.REACT_APP_RPC_PASSWORD;
+      //const rpcUsername = process.env.REACT_APP_RPC_USERNAME;
+      //const rpcPassword = process.env.REACT_APP_RPC_PASSWORD;
       let username;
       let password;
       username = rpcUsername ? rpcUsername : "umbrel";

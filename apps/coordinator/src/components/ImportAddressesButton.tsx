@@ -99,7 +99,7 @@ function ImportAddressesButton({
     // this typically is the case for the script interactions when dealing
     // with a single address
     if (
-      client.type === "private" &&
+      (client.type === "private" || client.type === "umbrel") &&
       (!enableImport || addresses.length === 1)
     ) {
       checkAddress();
