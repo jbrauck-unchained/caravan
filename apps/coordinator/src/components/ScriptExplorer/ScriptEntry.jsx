@@ -192,7 +192,8 @@ class ScriptEntry extends React.Component {
           </Grid>
           <FormHelperText error>{fetchUTXOsError}</FormHelperText>
         </Box>
-        {(client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && (
+        {(client.type === ClientType.PRIVATE ||
+          client.type === ClientType.UMBREL) && (
           <Box mt={2}>
             <ImportAddressesButton
               addresses={[multisig.address]}

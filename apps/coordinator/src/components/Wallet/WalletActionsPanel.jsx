@@ -118,15 +118,16 @@ const WalletActionsPanel = ({
               </ButtonWithTooltip>
             </ButtonGroup>
           </Grid>
-          {(client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && walletActivated && (
-            <Grid item>
-              <ImportAddressesButton
-                addresses={addresses}
-                client={client}
-                importCallback={onImportAddresses}
-              />
-            </Grid>
-          )}
+          {(client.type === "private" || client.type === "umbrel") &&
+            walletActivated && (
+              <Grid item>
+                <ImportAddressesButton
+                  addresses={addresses}
+                  client={client}
+                  importCallback={onImportAddresses}
+                />
+              </Grid>
+            )}
         </Grid>
       </CardContent>
     </Card>

@@ -287,7 +287,10 @@ class CreateWallet extends React.Component {
     // set client to unknown
     if (walletConfiguration.client) {
       setClientType(walletConfiguration.client.type);
-      if (walletConfiguration.client.type === ClientType.PRIVATE || walletConfiguration.client.type === ClientType.UMBREL) {
+      if (
+        walletConfiguration.client.type === ClientType.PRIVATE ||
+        walletConfiguration.client.type === ClientType.UMBREL
+      ) {
         setClientUrl(walletConfiguration.client.url);
         setClientUsername(walletConfiguration.client.username);
       }

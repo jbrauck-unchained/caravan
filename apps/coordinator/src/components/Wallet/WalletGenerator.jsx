@@ -399,57 +399,61 @@ class WalletGenerator extends React.Component {
                   />
                 </Box>
               )}
-              {(client.type === ClientType.PRIVATE || client.type === ClientType.UMBREL) && !unknownClient && (
-                <Box my={5}>
-                  <Grid container spacing={2} alignItems="center">
-                    <Grid item xs={12}>
-                      <Typography variant="subtitle1">
-                        This config uses a private client. Please enter password
-                        if not set.
-                      </Typography>
-                    </Grid>
-                    <Grid item>
-                      <TextField
-                        id="client-username"
-                        label="Username"
-                        defaultValue={client.username}
-                        InputProps={{
-                          readOnly: true,
-                          disabled: true,
-                          startAdornment: (
-                            <InputAdornment position="start">
-                              <AccountCircleIcon />
-                            </InputAdornment>
-                          ),
-                        }}
-                      />
-                    </Grid>
-                    <Grid item md={4} xs={10}>
-                      <form
-                        onSubmit={(event) => this.handlePasswordEnter(event)}
-                      >
+              {(client.type === ClientType.PRIVATE ||
+                client.type === ClientType.UMBREL) &&
+                !unknownClient && (
+                  <Box my={5}>
+                    <Grid container spacing={2} alignItems="center">
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle1">
+                          This config uses a private client. Please enter
+                          password if not set.
+                        </Typography>
+                      </Grid>
+                      <Grid item>
                         <TextField
-                          id="bitcoind-password"
-                          fullWidth
-                          type="password"
-                          label="Password"
-                          placeholder="Enter bitcoind password"
-                          value={client.password}
-                          variant="standard"
-                          onChange={(event) => this.handlePasswordChange(event)}
-                          error={client.passwordError.length > 0}
-                          helperText={client.passwordError}
+                          id="client-username"
+                          label="Username"
+                          defaultValue={client.username}
+                          InputProps={{
+                            readOnly: true,
+                            disabled: true,
+                            startAdornment: (
+                              <InputAdornment position="start">
+                                <AccountCircleIcon />
+                              </InputAdornment>
+                            ),
+                          }}
                         />
-                        {connectSuccess && (
-                          <FormHelperText>
-                            Connection confirmed with password!
-                          </FormHelperText>
-                        )}
-                      </form>
+                      </Grid>
+                      <Grid item md={4} xs={10}>
+                        <form
+                          onSubmit={(event) => this.handlePasswordEnter(event)}
+                        >
+                          <TextField
+                            id="bitcoind-password"
+                            fullWidth
+                            type="password"
+                            label="Password"
+                            placeholder="Enter bitcoind password"
+                            value={client.password}
+                            variant="standard"
+                            onChange={(event) =>
+                              this.handlePasswordChange(event)
+                            }
+                            error={client.passwordError.length > 0}
+                            helperText={client.passwordError}
+                          />
+                          {connectSuccess && (
+                            <FormHelperText>
+                              Connection confirmed with password!
+                            </FormHelperText>
+                          )}
+                        </form>
+                      </Grid>
                     </Grid>
-                  </Grid>
-                </Box>
-              )}
+                  </Box>
+                )}
               <p>
                 Please confirm that the above information is correct and you
                 wish to generate your wallet.
