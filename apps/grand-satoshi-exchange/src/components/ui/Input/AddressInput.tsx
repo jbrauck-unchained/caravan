@@ -29,9 +29,10 @@ export function AddressInput({
     // Only validate if touched and value is not empty
     if (touched && value && validateOnBlur) {
       try {
-        const isValid = validateAddress(value, network);
-        if (!isValid) {
-          setError("Invalid Bitcoin address");
+        const validationResult = validateAddress(value, network);
+        // validateAddress returns "" for valid, or error message for invalid
+        if (validationResult !== "") {
+          setError(validationResult);
         } else {
           setError("");
         }

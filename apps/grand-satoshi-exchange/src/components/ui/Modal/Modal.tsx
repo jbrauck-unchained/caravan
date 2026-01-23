@@ -40,7 +40,12 @@ export function Modal({
     };
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen) {
+    console.log("[Modal] Not rendering - isOpen is false");
+    return null;
+  }
+
+  console.log("[Modal] Rendering modal - title:", title);
 
   const handleOverlayClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {

@@ -10,6 +10,7 @@ import { GoldAmount, Tooltip } from "../components/ui/Display";
 import { InventoryGrid, InventorySlot, ItemStack } from "../components/ui/Grid";
 import { ImportWalletModal } from "../components/modals/ImportWalletModal";
 import { ReceiveModal } from "../components/modals/ReceiveModal";
+import { CreateOfferModal } from "../components/exchange/CreateOfferModal";
 import {
   useWalletStore,
   useHasWallet,
@@ -22,6 +23,7 @@ export function Bank() {
   const [selectedUTXOs, setSelectedUTXOs] = useState<Set<string>>(new Set());
   const [showImportModal, setShowImportModal] = useState(false);
   const [showReceiveModal, setShowReceiveModal] = useState(false);
+  const [showCreateOfferModal, setShowCreateOfferModal] = useState(false);
 
   // Wallet state
   const hasWallet = useHasWallet();
@@ -227,7 +229,11 @@ export function Bank() {
         }}
       >
         <Tooltip content="Send selected UTXOs to an address">
-          <Button variant="primary" disabled={selectedUTXOs.size === 0}>
+          <Button
+            variant="primary"
+            disabled={selectedUTXOs.size === 0}
+            onClick={() => setShowCreateOfferModal(true)}
+          >
             Send ({selectedUTXOs.size} selected)
           </Button>
         </Tooltip>
@@ -301,6 +307,12 @@ export function Bank() {
       <ReceiveModal
         isOpen={showReceiveModal}
         onClose={() => setShowReceiveModal(false)}
+      />
+
+      <CreateOfferModal
+        isOpen={showCreateOfferModal}
+        onClose={() => setShowCreateOfferModal(false)}
+        preSelectedUtxos={selectedUTXOs}
       />
     </div>
   );

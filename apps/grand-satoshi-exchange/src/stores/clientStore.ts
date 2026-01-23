@@ -104,8 +104,20 @@ export const useClientStore = create<ClientState>()(
       name: "gse-client-storage",
       // Only persist network and clientType, not the client instance
       partialize: (state) => ({
-        network: state.network,
-        clientType: state.clientType,
+        network: state?.network ?? Network.MAINNET,
+        clientType: state?.clientType ?? ClientType.MEMPOOL,
+      }),
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          console.error("[ClientStore] Hydration error:", error);
+        } else {
+          console.log("[ClientStore] Hydration complete:", state);
+        }
+      },
+      // Merge persisted state with defaults
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...(persistedState as Partial<ClientState>),
       }),
     },
   ),
@@ -116,11 +128,15 @@ export const useClientStore = create<ClientState>()(
  * Automatically initializes if needed
  */
 export const useClient = (): BlockchainClient | null => {
-  const { client, initializeClient, isInitializing } = useClientStore();
+  const client = useClientStore((state) => state?.client ?? null);
+  const isInitializing = useClientStore(
+    (state) => state?.isInitializing ?? false,
+  );
+  const initializeClient = useClientStore((state) => state?.initializeClient);
 
   // Auto-initialize on first use
   useEffect(() => {
-    if (!client && !isInitializing) {
+    if (!client && !isInitializing && initializeClient) {
       initializeClient();
     }
   }, [client, isInitializing, initializeClient]);

@@ -92,7 +92,10 @@ export const useWalletStore = create<WalletStoreState>()(
 
       // Clear wallet
       clearWallet: () => {
+        console.log("[WalletStore] Clearing wallet");
         set({ wallet: null, error: null });
+        // Also clear from localStorage
+        localStorage.removeItem("gse-wallet-storage");
       },
 
       // Set UTXOs and recalculate balances
@@ -248,6 +251,59 @@ export const useWalletStore = create<WalletStoreState>()(
       partialize: (state) => ({
         wallet: state.wallet,
       }),
+      // Custom storage to ensure proper serialization/deserialization
+      storage: {
+        getItem: (name) => {
+          const str = localStorage.getItem(name);
+          if (!str) return null;
+
+          try {
+            const parsed = JSON.parse(str);
+            console.log("[WalletStore] Loaded from storage:", {
+              hasWallet: !!parsed.state?.wallet,
+              hasConfig: !!parsed.state?.wallet?.config,
+              hasExtendedPublicKeys:
+                !!parsed.state?.wallet?.config?.extendedPublicKeys,
+              extendedPublicKeysLength:
+                parsed.state?.wallet?.config?.extendedPublicKeys?.length,
+            });
+
+            // Validate the restored wallet config
+            if (parsed.state?.wallet?.config) {
+              const config = parsed.state.wallet.config;
+              if (
+                !config.extendedPublicKeys ||
+                !Array.isArray(config.extendedPublicKeys)
+              ) {
+                console.error(
+                  "[WalletStore] Corrupted wallet config detected - clearing storage",
+                );
+                localStorage.removeItem(name);
+                return null;
+              }
+            }
+
+            return parsed;
+          } catch (err) {
+            console.error("[WalletStore] Failed to parse storage:", err);
+            return null;
+          }
+        },
+        setItem: (name, value) => {
+          console.log("[WalletStore] Saving to storage:", {
+            hasWallet: !!value.state?.wallet,
+            hasConfig: !!value.state?.wallet?.config,
+            hasExtendedPublicKeys:
+              !!value.state?.wallet?.config?.extendedPublicKeys,
+            extendedPublicKeysLength:
+              value.state?.wallet?.config?.extendedPublicKeys?.length,
+          });
+          localStorage.setItem(name, JSON.stringify(value));
+        },
+        removeItem: (name) => {
+          localStorage.removeItem(name);
+        },
+      },
     },
   ),
 );
