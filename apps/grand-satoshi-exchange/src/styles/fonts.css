@@ -1,0 +1,66 @@
+/* Grand Satoshi Exchange - Typography */
+
+/* Fallback to system monospace fonts until we add custom bitmap font */
+/* TODO: Add RuneScape-style bitmap font when assets are ready */
+
+.osrs-text {
+  font-family: "Press Start 2P", "Courier New", monospace;
+  font-smooth: never;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  image-rendering: pixelated;
+  text-shadow: 1px 1px 0 #000;
+}
+
+/* Base font settings */
+body {
+  font-family: "Press Start 2P", "Courier New", monospace;
+  font-size: var(--font-size-normal);
+  line-height: 1.5;
+}
+
+/* Text size utilities */
+.text-small {
+  font-size: var(--font-size-small);
+}
+
+.text-normal {
+  font-size: var(--font-size-normal);
+}
+
+.text-large {
+  font-size: var(--font-size-large);
+}
+
+.text-xlarge {
+  font-size: var(--font-size-xlarge);
+}
+
+/* Text color utilities */
+.text-yellow {
+  color: var(--osrs-text-yellow);
+}
+
+.text-white {
+  color: var(--osrs-text-white);
+}
+
+.text-orange {
+  color: var(--osrs-text-orange);
+}
+
+.text-green {
+  color: var(--osrs-text-green);
+}
+
+.text-red {
+  color: var(--osrs-text-red);
+}
+
+.text-cyan {
+  color: var(--osrs-text-cyan);
+}
+
+.text-gold {
+  color: var(--osrs-gold-light);
+}

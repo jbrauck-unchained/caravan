@@ -1,0 +1,57 @@
+/* Grand Satoshi Exchange - CSS Variables */
+
+:root {
+  /* Primary UI Colors */
+  --osrs-brown-dark: #3e3529; /* Window borders */
+  --osrs-brown-medium: #5d5349; /* Window backgrounds */
+  --osrs-brown-light: #8b7355; /* Highlights */
+
+  /* Text Colors */
+  --osrs-text-yellow: #ffff00; /* Primary text */
+  --osrs-text-white: #ffffff; /* Headers */
+  --osrs-text-orange: #ff9900; /* Warnings/values */
+  --osrs-text-green: #00ff00; /* Success/positive */
+  --osrs-text-red: #ff0000; /* Errors/negative */
+  --osrs-text-cyan: #00ffff; /* Links/interactive */
+
+  /* Gold Colors (Bitcoin!) */
+  --osrs-gold-dark: #8b6914; /* Coin shadow */
+  --osrs-gold-medium: #c9a227; /* Coin base */
+  --osrs-gold-light: #ffd700; /* Coin highlight */
+
+  /* GE Specific */
+  --ge-slot-empty: #494034; /* Empty offer slot */
+  --ge-slot-active: #5d5349; /* Active offer */
+  --ge-progress-bg: #2d2822; /* Progress bar bg */
+  --ge-progress-fill: #00b300; /* Progress bar fill */
+
+  /* Inventory */
+  --inv-slot-bg: #3e3529; /* Slot background */
+  --inv-slot-border: #2d2822; /* Slot border */
+  --inv-slot-highlight: #5d5349; /* Hover state */
+  --inv-slot-selected: #7d6d55; /* Selected state */
+
+  /* Font Sizes */
+  --font-size-small: 12px; /* Tooltips, secondary info */
+  --font-size-normal: 16px; /* Body text */
+  --font-size-large: 20px; /* Headers, amounts */
+  --font-size-xlarge: 24px; /* Big numbers (balance) */
+
+  /* Spacing (multiples of 4px for pixel grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Border Radius (minimal for pixel art look) */
+  --radius-none: 0;
+  --radius-small: 2px;
+
+  /* Z-Index Layers */
+  --z-base: 1;
+  --z-dropdown: 100;
+  --z-modal: 1000;
+  --z-tooltip: 2000;
+}

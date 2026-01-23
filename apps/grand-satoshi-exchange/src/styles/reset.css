@@ -1,0 +1,59 @@
+/* Grand Satoshi Exchange - CSS Reset */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Remove default list styles */
+ul,
+ol {
+  list-style: none;
+}
+
+/* Remove default button styles */
+button {
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Remove default input styles */
+input,
+textarea,
+select {
+  font: inherit;
+  border: none;
+  background: none;
+  outline: none;
+}
+
+/* Remove default link styles */
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* Ensure images and media are responsive */
+img,
+video {
+  max-width: 100%;
+  display: block;
+}

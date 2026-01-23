@@ -1,0 +1,78 @@
+/* Grand Satoshi Exchange - Global Styles */
+
+/* Import all style modules */
+@import "./reset.css";
+@import "./variables.css";
+@import "./fonts.css";
+@import "./animations.css";
+
+/* Pixel-perfect rendering for all elements */
+* {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+/* Disable font smoothing for pixel-perfect text */
+body {
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
+  background-color: var(--osrs-brown-dark);
+  color: var(--osrs-text-yellow);
+}
+
+/* Main app container */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-4);
+  background-color: var(--osrs-brown-dark);
+}
+
+/* Ensure canvas and images maintain pixel-perfect quality */
+canvas,
+img {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+/* Default text shadow for OSRS effect */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  text-shadow: 1px 1px 0 #000;
+  color: var(--osrs-text-yellow);
+}
+
+/* Scrollbar styling (OSRS-like) */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--osrs-brown-dark);
+  border: 1px solid var(--inv-slot-border);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--osrs-brown-medium);
+  border: 1px solid var(--osrs-brown-dark);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--osrs-brown-light);
+}
+
+/* Selection color */
+::selection {
+  background-color: var(--inv-slot-selected);
+  color: var(--osrs-text-yellow);
+}

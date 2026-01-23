@@ -1,0 +1,85 @@
+.inputWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+}
+
+.label {
+  color: var(--osrs-text-yellow);
+  font-size: var(--font-size-small);
+  text-shadow: 1px 1px 0 #000;
+  margin-bottom: var(--space-1);
+}
+
+.input {
+  background-color: var(--osrs-brown-dark);
+  border: 2px solid var(--inv-slot-border);
+  border-radius: var(--radius-small);
+  padding: var(--space-2) var(--space-3);
+  color: var(--osrs-text-white);
+  font-size: var(--font-size-normal);
+  font-family: inherit;
+  width: 100%;
+  box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.input::placeholder {
+  color: #666;
+  opacity: 1;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--osrs-text-cyan);
+  box-shadow:
+    inset 1px 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 0 2px rgba(0, 255, 255, 0.2);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--inv-slot-border);
+}
+
+/* Error state */
+.input.error {
+  border-color: var(--osrs-text-red);
+}
+
+.input.error:focus {
+  border-color: var(--osrs-text-red);
+  box-shadow:
+    inset 1px 1px 3px rgba(0, 0, 0, 0.5),
+    0 0 0 2px rgba(255, 0, 0, 0.2);
+}
+
+/* Valid state */
+.input.valid {
+  border-color: var(--osrs-text-green);
+}
+
+.errorMessage {
+  color: var(--osrs-text-red);
+  font-size: var(--font-size-small);
+  margin-top: var(--space-1);
+}
+
+.helpText {
+  color: #888;
+  font-size: var(--font-size-small);
+  margin-top: var(--space-1);
+}
+
+/* Number input specific */
+.numberInput {
+  text-align: right;
+  font-family: monospace;
+}
+
+/* Address input specific */
+.addressInput {
+  font-family: monospace;
+  font-size: 14px;
+}

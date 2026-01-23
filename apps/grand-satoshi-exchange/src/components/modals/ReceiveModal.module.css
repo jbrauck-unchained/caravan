@@ -1,0 +1,174 @@
+/**
+ * Receive Modal Styles
+ */
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 400px;
+  max-width: 500px;
+}
+
+/* QR Code Section */
+.qrSection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.qrContainer {
+  padding: 16px;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.qrCanvas {
+  display: block;
+  width: 200px;
+  height: 200px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.qrLabel {
+  color: var(--osrs-text-orange);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Address Section */
+.addressSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.label {
+  color: var(--osrs-text-yellow);
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.addressBox {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.address {
+  flex: 1;
+  padding: 12px;
+  background: var(--osrs-brown-dark);
+  color: var(--osrs-text-white);
+  border: 2px solid var(--inv-slot-border);
+  border-radius: 4px;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.copyButton {
+  min-width: 80px;
+}
+
+/* Details Section */
+.details {
+  padding: 12px;
+  background: var(--osrs-brown-dark);
+  border: 2px solid var(--inv-slot-border);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detailRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.detailLabel {
+  color: var(--osrs-text-yellow);
+  font-weight: bold;
+}
+
+.detailValue {
+  color: var(--osrs-text-white);
+  font-family: "Courier New", monospace;
+}
+
+/* Stats Section */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 12px;
+  background: var(--osrs-brown-dark);
+  border: 2px solid var(--inv-slot-border);
+  border-radius: 4px;
+}
+
+.statItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.statValue {
+  color: var(--osrs-text-green);
+  font-size: 20px;
+  font-weight: bold;
+}
+
+.statLabel {
+  color: var(--osrs-text-orange);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Warning */
+.warning {
+  padding: 12px;
+  background: rgba(255, 165, 0, 0.1);
+  border: 2px solid #ff9900;
+  border-radius: 4px;
+  color: #ffcc66;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Info */
+.info {
+  padding: 12px;
+  background: rgba(0, 255, 0, 0.05);
+  border: 2px solid var(--osrs-text-green);
+  border-radius: 4px;
+  color: var(--osrs-text-green);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Error */
+.error {
+  padding: 16px;
+  background: rgba(255, 0, 0, 0.1);
+  border: 2px solid #ff0000;
+  border-radius: 4px;
+  color: #ff6666;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Actions */
+.actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}

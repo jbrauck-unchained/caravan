@@ -1,0 +1,112 @@
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+  animation: fadeIn 0.2s ease-in;
+}
+
+.modal {
+  background-color: var(--osrs-brown-medium);
+  border: 3px solid var(--osrs-brown-dark);
+  border-radius: var(--radius-small);
+  box-shadow:
+    inset 1px 1px 0 var(--osrs-brown-light),
+    0 4px 16px rgba(0, 0, 0, 0.8);
+  display: flex;
+  flex-direction: column;
+  max-width: 90vw;
+  max-height: 90vh;
+  animation: slideDown 0.2s ease-out;
+}
+
+.header {
+  background-color: var(--osrs-brown-dark);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px solid var(--osrs-brown-light);
+}
+
+.title {
+  color: var(--osrs-text-yellow);
+  font-size: var(--font-size-large);
+  text-shadow: 1px 1px 0 #000;
+  margin: 0;
+}
+
+.closeButton {
+  width: 24px;
+  height: 24px;
+  background-color: var(--osrs-text-red);
+  border: 2px solid var(--osrs-brown-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.1s;
+  color: var(--osrs-text-white);
+  font-size: 18px;
+  font-weight: bold;
+  border-radius: var(--radius-small);
+}
+
+.closeButton:hover {
+  background-color: #ff3333;
+}
+
+.closeButton:active {
+  transform: translateY(1px);
+}
+
+.content {
+  padding: var(--space-4);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Confirm Dialog */
+.confirmDialog {
+  min-width: 300px;
+}
+
+.message {
+  color: var(--osrs-text-white);
+  font-size: var(--font-size-normal);
+  margin-bottom: var(--space-4);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

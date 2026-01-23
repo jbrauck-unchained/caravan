@@ -1,0 +1,96 @@
+.button {
+  background-color: var(--osrs-brown-medium);
+  border: 2px solid var(--osrs-brown-dark);
+  border-radius: var(--radius-small);
+  padding: var(--space-2) var(--space-4);
+  color: var(--osrs-text-yellow);
+  font-size: var(--font-size-normal);
+  text-shadow: 1px 1px 0 #000;
+  cursor: pointer;
+  transition: all 0.1s;
+  user-select: none;
+  box-shadow:
+    inset 1px 1px 0 var(--osrs-brown-light),
+    1px 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.button:hover:not(:disabled) {
+  background-color: var(--osrs-brown-light);
+  border-color: var(--osrs-brown-medium);
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    inset 1px 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 2px rgba(0, 0, 0, 0.3);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--osrs-brown-dark);
+  color: #666;
+}
+
+/* Variant: Primary */
+.primary {
+  background-color: var(--ge-progress-fill);
+  border-color: #008800;
+  color: var(--osrs-text-white);
+}
+
+.primary:hover:not(:disabled) {
+  background-color: #00cc00;
+}
+
+/* Variant: Danger */
+.danger {
+  background-color: var(--osrs-text-red);
+  border-color: #cc0000;
+  color: var(--osrs-text-white);
+}
+
+.danger:hover:not(:disabled) {
+  background-color: #ff3333;
+}
+
+/* Variant: Secondary */
+.secondary {
+  background-color: transparent;
+  border-color: var(--osrs-brown-medium);
+  color: var(--osrs-text-cyan);
+}
+
+.secondary:hover:not(:disabled) {
+  background-color: var(--osrs-brown-dark);
+  border-color: var(--osrs-brown-light);
+}
+
+/* Icon Button */
+.iconButton {
+  padding: var(--space-2);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Tab Button */
+.tabButton {
+  background-color: var(--osrs-brown-dark);
+  border-bottom: 3px solid var(--osrs-brown-dark);
+  border-radius: var(--radius-small) var(--radius-small) 0 0;
+  padding: var(--space-2) var(--space-4);
+}
+
+.tabButton.active {
+  background-color: var(--osrs-brown-medium);
+  border-bottom-color: var(--osrs-brown-medium);
+  transform: translateY(2px);
+}
+
+.tabButton:hover:not(.active):not(:disabled) {
+  background-color: var(--osrs-brown-medium);
+}

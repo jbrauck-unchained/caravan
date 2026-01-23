@@ -1,0 +1,128 @@
+/* Gold Amount Display */
+.goldAmount {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--osrs-gold-light);
+  font-size: var(--font-size-normal);
+  text-shadow: 1px 1px 0 #000;
+  font-weight: bold;
+}
+
+.goldAmount.large {
+  font-size: var(--font-size-large);
+}
+
+.goldAmount.xlarge {
+  font-size: var(--font-size-xlarge);
+}
+
+.coinIcon {
+  width: 20px;
+  height: 20px;
+  background-color: var(--osrs-gold-medium);
+  border-radius: 50%;
+  border: 2px solid var(--osrs-gold-dark);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.btcValue {
+  color: var(--osrs-text-orange);
+  font-size: var(--font-size-small);
+  margin-left: var(--space-2);
+}
+
+/* Progress Bar */
+.progressBar {
+  width: 100%;
+  height: 16px;
+  background-color: var(--ge-progress-bg);
+  border: 2px solid var(--inv-slot-border);
+  border-radius: var(--radius-small);
+  overflow: hidden;
+  position: relative;
+}
+
+.progressFill {
+  height: 100%;
+  background-color: var(--ge-progress-fill);
+  transition: width 0.3s ease-out;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.progressLabel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--osrs-text-white);
+  font-size: var(--font-size-small);
+  text-shadow: 1px 1px 0 #000;
+  font-weight: bold;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+/* Tooltip */
+.tooltipContainer {
+  position: relative;
+  display: inline-block;
+}
+
+.tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: var(--osrs-brown-dark);
+  border: 2px solid var(--osrs-brown-light);
+  border-radius: var(--radius-small);
+  padding: var(--space-2) var(--space-3);
+  color: var(--osrs-text-yellow);
+  font-size: var(--font-size-small);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: var(--z-tooltip);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.tooltip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--osrs-brown-dark);
+}
+
+.tooltipContainer:hover .tooltip {
+  opacity: 1;
+}
+
+/* Tooltip positions */
+.tooltip.top {
+  bottom: calc(100% + 8px);
+  top: auto;
+}
+
+.tooltip.bottom {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+.tooltip.bottom::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--osrs-brown-dark);
+}

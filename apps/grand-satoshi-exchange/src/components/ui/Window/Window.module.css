@@ -1,0 +1,64 @@
+.window {
+  background-color: var(--osrs-brown-medium);
+  border: 3px solid var(--osrs-brown-dark);
+  border-radius: var(--radius-small);
+  box-shadow:
+    inset 1px 1px 0 var(--osrs-brown-light),
+    2px 2px 8px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  min-width: 400px;
+  max-width: 90vw;
+  max-height: 95vh;
+  margin: auto 0;
+}
+
+.header {
+  background-color: var(--osrs-brown-dark);
+  padding: var(--space-2) var(--space-4);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px solid var(--osrs-brown-light);
+  user-select: none;
+}
+
+.title {
+  color: var(--osrs-text-yellow);
+  font-size: var(--font-size-normal);
+  text-shadow: 1px 1px 0 #000;
+  font-weight: normal;
+  margin: 0;
+}
+
+.closeButton {
+  width: 20px;
+  height: 20px;
+  background-color: var(--osrs-text-red);
+  border: 2px solid var(--osrs-brown-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.1s;
+  color: var(--osrs-text-white);
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 1;
+}
+
+.closeButton:hover {
+  background-color: #ff3333;
+}
+
+.closeButton:active {
+  transform: translateY(1px);
+}
+
+.content {
+  padding: var(--space-4);
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+}
