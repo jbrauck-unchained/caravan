@@ -38,13 +38,11 @@ export function SigningModal({
     useHardwareWallet();
 
   // Get available signers (those who haven't signed yet)
-  const signedXfps = offer?.signatures.map((sig) => sig.xfp) ?? [];
+  const signedXfps = offer?.signatures?.map((sig) => sig.xfp) ?? [];
   const availableSigners =
-    walletConfig && walletConfig.extendedPublicKeys
-      ? walletConfig.extendedPublicKeys.filter(
-          (key) => !signedXfps.includes(key.xfp),
-        )
-      : [];
+    walletConfig?.extendedPublicKeys?.filter(
+      (key) => !signedXfps.includes(key.xfp),
+    ) ?? [];
 
   console.log("[SigningModal] walletConfig:", walletConfig ? "exists" : "null");
   console.log(

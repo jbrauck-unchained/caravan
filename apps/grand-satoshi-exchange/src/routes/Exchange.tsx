@@ -9,6 +9,8 @@ import { OfferSlot } from "../components/exchange/OfferSlot";
 import { CreateOfferModal } from "../components/exchange/CreateOfferModal";
 import { SigningModal } from "../components/hardware/SigningModal";
 import { OfferCompleteModal } from "../components/exchange/OfferCompleteModal";
+import { MonitoredTransactionsPanel } from "../components/exchange/MonitoredTransactionsPanel";
+import { TransactionArchivePanel } from "../components/exchange/TransactionArchivePanel";
 import { ConfirmDialog } from "../components/ui/Modal";
 import {
   usePendingOffers,
@@ -17,6 +19,8 @@ import {
 import { useHasWallet } from "@/stores/walletStore";
 import { useClient, useClientStore } from "@/stores/clientStore";
 import { broadcastTransaction } from "@/utils/broadcast";
+import { useTransactionMonitoring } from "@/hooks/useTransactionMonitoring";
+import { useIncomingTransactions } from "@/hooks/useIncomingTransactions";
 import type { SignatureSet, CompletedTransaction } from "@/types/transaction";
 
 export function Exchange() {
@@ -42,8 +46,22 @@ export function Exchange() {
       : null,
   );
   const network = useClientStore((state) => state.network);
-  const { removeOffer, updateOfferStatus, addSignature, addToHistory } =
-    useTransactionStore();
+  const {
+    removeOffer,
+    updateOfferStatus,
+    addSignature,
+    addToHistory,
+    startMonitoring,
+  } = useTransactionStore();
+
+  // Initialize transaction monitoring
+  useTransactionMonitoring({
+    pollInterval: 30000, // 30 seconds
+    confirmationsForArchive: 6,
+  });
+
+  // Initialize incoming transaction detection
+  useIncomingTransactions();
 
   // Create 8 slots
   const slots = Array.from({ length: 8 }, (_, index) => {
@@ -102,6 +120,21 @@ export function Exchange() {
       );
 
       console.log("[Exchange] ✓ Broadcast successful:", txid);
+
+      // Start monitoring the transaction
+      startMonitoring({
+        txid,
+        direction: "outgoing",
+        confirmations: 0,
+        status: "mempool",
+        firstSeen: new Date(),
+        lastChecked: new Date(),
+        amount: offer.amount,
+        addresses: offer.inputs.map((utxo) => utxo.address),
+        destination: offer.destination,
+        fee: offer.fee,
+      });
+      console.log("[Exchange] Started monitoring transaction:", txid);
 
       // Create completed transaction record
       const completedTx: CompletedTransaction = {
@@ -197,6 +230,11 @@ export function Exchange() {
         Grand Exchange (Pending Transactions)
       </h3>
 
+      {/* Transaction Monitoring Panel */}
+      <div style={{ marginBottom: "24px" }}>
+        <MonitoredTransactionsPanel />
+      </div>
+
       {/* 8 Offer Slots in 2x4 grid */}
       <div
         style={{
@@ -269,6 +307,11 @@ export function Exchange() {
           Sign with your hardware wallet(s). Once enough signatures are
           collected, broadcast the transaction to the network!
         </p>
+      </div>
+
+      {/* Transaction Archive Panel */}
+      <div style={{ marginTop: "24px" }}>
+        <TransactionArchivePanel />
       </div>
 
       {/* Create Offer Modal */}

@@ -11,6 +11,9 @@ import type {
   PendingOffer,
   CompletedTransaction,
   SignatureSet,
+  MonitoredTransaction,
+  TransactionUpdate,
+  TransactionStatus,
 } from "@/types/transaction";
 import type { UTXO } from "@/types/wallet";
 
@@ -21,6 +24,10 @@ export interface TransactionState {
   pendingOffers: PendingOffer[];
   /** Completed transaction history */
   history: CompletedTransaction[];
+  /** Transactions being monitored for confirmations */
+  monitoredTransactions: MonitoredTransaction[];
+  /** Archive of fully confirmed transactions */
+  archivedTransactions: MonitoredTransaction[];
   /** Whether an operation is in progress */
   isProcessing: boolean;
   /** Error message */
@@ -50,6 +57,15 @@ export interface TransactionState {
   addToHistory: (tx: CompletedTransaction) => void;
   clearHistory: () => void;
 
+  // Transaction monitoring actions
+  startMonitoring: (tx: MonitoredTransaction) => void;
+  updateTransactionStatus: (update: TransactionUpdate) => void;
+  archiveTransaction: (txid: string) => void;
+  stopMonitoring: (txid: string) => void;
+  getMonitoredTransaction: (txid: string) => MonitoredTransaction | undefined;
+  archiveOldTransactions: (minConfirmations?: number) => void;
+  cleanupArchive: (daysOld: number) => void;
+
   // Error handling
   setError: (error: string | null) => void;
   clearError: () => void;
@@ -66,6 +82,8 @@ export const useTransactionStore = create<TransactionState>()(
       currentDraft: null,
       pendingOffers: [],
       history: [],
+      monitoredTransactions: [],
+      archivedTransactions: [],
       isProcessing: false,
       error: null,
 
@@ -305,6 +323,144 @@ export const useTransactionStore = create<TransactionState>()(
         set({ history: [] });
       },
 
+      // Start monitoring a transaction
+      startMonitoring: (tx: MonitoredTransaction) => {
+        const { monitoredTransactions } = get();
+
+        // Check if already monitoring
+        const exists = monitoredTransactions.some((t) => t.txid === tx.txid);
+        if (exists) {
+          console.warn(
+            `[Store] Transaction ${tx.txid} is already being monitored`,
+          );
+          return;
+        }
+
+        console.log(`[Store] Started monitoring transaction: ${tx.txid}`);
+        set({
+          monitoredTransactions: [...monitoredTransactions, tx],
+        });
+      },
+
+      // Update transaction status
+      updateTransactionStatus: (update: TransactionUpdate) => {
+        const { monitoredTransactions } = get();
+
+        const updated = monitoredTransactions.map((tx) => {
+          if (tx.txid !== update.txid) return tx;
+
+          // Calculate new status based on confirmations
+          let status: TransactionStatus;
+          if (update.confirmations === 0) {
+            status = "mempool";
+          } else if (update.confirmations < 6) {
+            status = "confirming";
+          } else {
+            status = "confirmed";
+          }
+
+          return {
+            ...tx,
+            confirmations: update.confirmations,
+            status,
+            blockHeight: update.blockHeight,
+            blockTime: update.blockTime
+              ? new Date(update.blockTime * 1000)
+              : tx.blockTime,
+            lastChecked: new Date(),
+          };
+        });
+
+        console.log(
+          `[Store] Updated transaction ${update.txid}: ${update.confirmations} confirmations`,
+        );
+        set({ monitoredTransactions: updated });
+      },
+
+      // Archive a transaction (move to archive)
+      archiveTransaction: (txid: string) => {
+        const { monitoredTransactions, archivedTransactions } = get();
+
+        const tx = monitoredTransactions.find((t) => t.txid === txid);
+        if (!tx) {
+          console.warn(`[Store] Transaction ${txid} not found for archiving`);
+          return;
+        }
+
+        console.log(`[Store] Archived transaction: ${txid}`);
+        set({
+          monitoredTransactions: monitoredTransactions.filter(
+            (t) => t.txid !== txid,
+          ),
+          archivedTransactions: [
+            { ...tx, status: "archived" },
+            ...archivedTransactions,
+          ],
+        });
+      },
+
+      // Stop monitoring a transaction (remove completely)
+      stopMonitoring: (txid: string) => {
+        const { monitoredTransactions } = get();
+        console.log(`[Store] Stopped monitoring transaction: ${txid}`);
+        set({
+          monitoredTransactions: monitoredTransactions.filter(
+            (t) => t.txid !== txid,
+          ),
+        });
+      },
+
+      // Get a monitored transaction by txid
+      getMonitoredTransaction: (txid: string) => {
+        const { monitoredTransactions } = get();
+        return monitoredTransactions.find((t) => t.txid === txid);
+      },
+
+      // Archive all transactions with >= minConfirmations
+      archiveOldTransactions: (minConfirmations = 6) => {
+        const { monitoredTransactions, archivedTransactions } = get();
+
+        const toArchive = monitoredTransactions.filter(
+          (tx) => tx.confirmations >= minConfirmations,
+        );
+
+        if (toArchive.length === 0) return;
+
+        const remaining = monitoredTransactions.filter(
+          (tx) => tx.confirmations < minConfirmations,
+        );
+
+        console.log(`[Store] Auto-archived ${toArchive.length} transactions`);
+        set({
+          monitoredTransactions: remaining,
+          archivedTransactions: [
+            ...toArchive.map((tx) => ({
+              ...tx,
+              status: "archived" as TransactionStatus,
+            })),
+            ...archivedTransactions,
+          ],
+        });
+      },
+
+      // Clean up old archived transactions
+      cleanupArchive: (daysOld: number) => {
+        const { archivedTransactions } = get();
+        const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+
+        const filtered = archivedTransactions.filter(
+          (tx) => new Date(tx.firstSeen) > cutoffDate,
+        );
+
+        const removed = archivedTransactions.length - filtered.length;
+        if (removed > 0) {
+          console.log(
+            `[Store] Cleaned up ${removed} old archived transactions`,
+          );
+          set({ archivedTransactions: filtered });
+        }
+      },
+
       // Set error
       setError: (error: string | null) => {
         set({ error });
@@ -317,10 +473,12 @@ export const useTransactionStore = create<TransactionState>()(
     }),
     {
       name: "gse-transaction-storage",
-      // Persist pending offers and history, but not current draft
+      // Persist pending offers, history, and monitored transactions
       partialize: (state) => ({
         pendingOffers: state.pendingOffers,
         history: state.history,
+        monitoredTransactions: state.monitoredTransactions,
+        archivedTransactions: state.archivedTransactions,
       }),
       // Custom storage to handle BigInt serialization
       storage: {
@@ -349,6 +507,32 @@ export const useTransactionStore = create<TransactionState>()(
             }));
           }
 
+          if (state.monitoredTransactions) {
+            state.monitoredTransactions = state.monitoredTransactions.map(
+              (tx: any) => ({
+                ...tx,
+                amount: BigInt(tx.amount),
+                fee: tx.fee ? BigInt(tx.fee) : undefined,
+                firstSeen: new Date(tx.firstSeen),
+                lastChecked: new Date(tx.lastChecked),
+                blockTime: tx.blockTime ? new Date(tx.blockTime) : undefined,
+              }),
+            );
+          }
+
+          if (state.archivedTransactions) {
+            state.archivedTransactions = state.archivedTransactions.map(
+              (tx: any) => ({
+                ...tx,
+                amount: BigInt(tx.amount),
+                fee: tx.fee ? BigInt(tx.fee) : undefined,
+                firstSeen: new Date(tx.firstSeen),
+                lastChecked: new Date(tx.lastChecked),
+                blockTime: tx.blockTime ? new Date(tx.blockTime) : undefined,
+              }),
+            );
+          }
+
           return { state, version: 0 };
         },
         setItem: (name, value) => {
@@ -356,7 +540,6 @@ export const useTransactionStore = create<TransactionState>()(
 
           // Convert BigInt to string for serialization
           const serializable = {
-            ...state,
             pendingOffers: state.pendingOffers?.map((offer: PendingOffer) => ({
               ...offer,
               amount: offer.amount.toString(),
@@ -368,6 +551,20 @@ export const useTransactionStore = create<TransactionState>()(
               amount: tx.amount.toString(),
               fee: tx.fee.toString(),
             })),
+            monitoredTransactions: state.monitoredTransactions?.map(
+              (tx: MonitoredTransaction) => ({
+                ...tx,
+                amount: tx.amount.toString(),
+                fee: tx.fee?.toString(),
+              }),
+            ),
+            archivedTransactions: state.archivedTransactions?.map(
+              (tx: MonitoredTransaction) => ({
+                ...tx,
+                amount: tx.amount.toString(),
+                fee: tx.fee?.toString(),
+              }),
+            ),
           };
 
           localStorage.setItem(
@@ -417,5 +614,30 @@ export const useTransactionHistory = (): CompletedTransaction[] => {
 export const useOffer = (offerId: string): PendingOffer | undefined => {
   return useTransactionStore((state) =>
     state.pendingOffers.find((offer) => offer.id === offerId),
+  );
+};
+
+/**
+ * Hook to get monitored transactions
+ */
+export const useMonitoredTransactions = (): MonitoredTransaction[] => {
+  return useTransactionStore((state) => state.monitoredTransactions);
+};
+
+/**
+ * Hook to get archived transactions
+ */
+export const useArchivedTransactions = (): MonitoredTransaction[] => {
+  return useTransactionStore((state) => state.archivedTransactions);
+};
+
+/**
+ * Hook to get a specific monitored transaction
+ */
+export const useMonitoredTransaction = (
+  txid: string,
+): MonitoredTransaction | undefined => {
+  return useTransactionStore((state) =>
+    state.monitoredTransactions.find((tx) => tx.txid === txid),
   );
 };

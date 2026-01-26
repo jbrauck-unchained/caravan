@@ -7,7 +7,17 @@
 import { getUnsignedMultisigPsbtV0 } from "@caravan/psbt";
 import type { PsbtInput, PsbtOutput } from "@caravan/psbt";
 import type { MultisigWalletConfig } from "@caravan/multisig";
-import { Network, estimateMultisigTransactionFee } from "@caravan/bitcoin";
+import {
+  Network,
+  estimateMultisigTransactionFee,
+  deriveChildPublicKey,
+  generateMultisigFromPublicKeys,
+  multisigRedeemScript,
+  multisigWitnessScript,
+  P2SH,
+  P2WSH,
+  P2SH_P2WSH,
+} from "@caravan/bitcoin";
 import type { UTXO, AddressSlice } from "@/types/wallet";
 import type { TransactionDraft } from "@/types/transaction";
 
@@ -41,6 +51,109 @@ function findAddressSlice(
 }
 
 /**
+ * Derive public key at a specific path from an extended public key
+ */
+function derivePublicKey(
+  xpub: string,
+  network: Network,
+  change: number,
+  index: number,
+): string {
+  // Derive change/index path relative to the xpub
+  const bip32Path = `${change}/${index}`;
+  return deriveChildPublicKey(xpub, bip32Path, network);
+}
+
+/**
+ * Generate BIP32 derivation paths for all signers
+ */
+function generateBip32Derivations(
+  walletConfig: MultisigWalletConfig,
+  addressSlice: AddressSlice,
+  network: Network,
+): Array<{
+  masterFingerprint: Buffer;
+  path: string;
+  pubkey: Buffer;
+}> {
+  const derivations: Array<{
+    masterFingerprint: Buffer;
+    path: string;
+    pubkey: Buffer;
+  }> = [];
+
+  const [change, addressIndex] = addressSlice.bip32Path;
+
+  for (const key of walletConfig.extendedPublicKeys) {
+    // Derive the public key for this signer at this address
+    const pubkeyHex = derivePublicKey(key.xpub, network, change, addressIndex);
+
+    // Full derivation path
+    const fullPath = `${key.bip32Path}/${change}/${addressIndex}`;
+
+    derivations.push({
+      masterFingerprint: Buffer.from(key.xfp, "hex"),
+      path: fullPath,
+      pubkey: Buffer.from(pubkeyHex, "hex"),
+    });
+  }
+
+  return derivations;
+}
+
+/**
+ * Generate redeem and witness scripts for the input
+ */
+function generateScripts(
+  walletConfig: MultisigWalletConfig,
+  addressSlice: AddressSlice,
+  network: Network,
+): { redeemScript?: Buffer; witnessScript?: Buffer } {
+  const [change, addressIndex] = addressSlice.bip32Path;
+
+  // Derive all public keys for this address
+  const publicKeys = walletConfig.extendedPublicKeys.map((key) =>
+    derivePublicKey(key.xpub, network, change, addressIndex),
+  );
+
+  const m = walletConfig.quorum.requiredSigners;
+  const addressType = walletConfig.addressType;
+
+  // Generate the multisig object which contains the scripts
+  const multisig = generateMultisigFromPublicKeys(
+    network,
+    addressType,
+    m,
+    ...publicKeys,
+  );
+
+  const redeemScriptRaw = multisigRedeemScript(multisig);
+  const witnessScriptRaw = multisigWitnessScript(multisig);
+
+  // Extract the actual Buffer from the payment object
+  // The functions return payment objects, not raw buffers
+  const redeemScript = redeemScriptRaw?.output || redeemScriptRaw;
+  const witnessScript = witnessScriptRaw?.output || witnessScriptRaw;
+
+  if (addressType === P2SH) {
+    return {
+      redeemScript: redeemScript || undefined,
+    };
+  } else if (addressType === P2WSH) {
+    return {
+      witnessScript: witnessScript || undefined,
+    };
+  } else if (addressType === P2SH_P2WSH) {
+    return {
+      redeemScript: redeemScript || undefined,
+      witnessScript: witnessScript || undefined,
+    };
+  }
+
+  return {};
+}
+
+/**
  * Convert UTXO to PSBT input format
  */
 async function utxoToPsbtInput(
@@ -48,6 +161,7 @@ async function utxoToPsbtInput(
   walletConfig: MultisigWalletConfig,
   addresses: AddressSlice[],
   client: any,
+  network: Network,
 ): Promise<PsbtInput> {
   // Find address slice to get derivation path
   const addressSlice = findAddressSlice(utxo.address, addresses);
@@ -61,12 +175,24 @@ async function utxoToPsbtInput(
   // Convert txid to hash (reversed Buffer)
   const hash = Buffer.from(utxo.txid, "hex").reverse();
 
+  // Generate BIP32 derivation paths for all signers
+  const bip32Derivation = generateBip32Derivations(
+    walletConfig,
+    addressSlice,
+    network,
+  );
+
+  // Generate redeem/witness scripts
+  const scripts = generateScripts(walletConfig, addressSlice, network);
+
   // Create input
   const input: PsbtInput = {
     hash,
     index: utxo.vout,
     transactionHex,
+    bip32Derivation,
     spendingWallet: walletConfig,
+    ...scripts,
   };
 
   console.log(`[PSBT] Created input for ${utxo.txid}:${utxo.vout}`);
@@ -175,7 +301,7 @@ export async function createUnsignedPsbt(
   console.log("[PSBT] Converting UTXOs to inputs...");
   const inputs = await Promise.all(
     draft.selectedUtxos.map((utxo) =>
-      utxoToPsbtInput(utxo, walletConfig, addresses, client),
+      utxoToPsbtInput(utxo, walletConfig, addresses, client, network),
     ),
   );
 

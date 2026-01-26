@@ -181,3 +181,65 @@ export interface BroadcastResult {
   /** Error details (if failed) */
   error?: BroadcastError;
 }
+
+/**
+ * Transaction Status
+ * Lifecycle state of a monitored transaction
+ */
+export type TransactionStatus =
+  | "mempool"
+  | "confirming"
+  | "confirmed"
+  | "archived";
+
+/**
+ * Transaction Direction
+ * Whether transaction is incoming or outgoing from wallet perspective
+ */
+export type TransactionDirection = "incoming" | "outgoing";
+
+/**
+ * Monitored Transaction
+ * A transaction being tracked for confirmation progress
+ */
+export interface MonitoredTransaction {
+  /** Transaction ID */
+  txid: string;
+  /** Direction relative to wallet */
+  direction: TransactionDirection;
+  /** Current number of confirmations */
+  confirmations: number;
+  /** Current status */
+  status: TransactionStatus;
+  /** When transaction was first detected */
+  firstSeen: Date;
+  /** Last time status was checked */
+  lastChecked: Date;
+  /** Block height (if confirmed) */
+  blockHeight?: number;
+  /** Block timestamp (if confirmed) */
+  blockTime?: Date;
+  /** Total amount involved (sats) */
+  amount: bigint;
+  /** Wallet addresses involved in this transaction */
+  addresses: string[];
+  /** Optional destination address for outgoing txs */
+  destination?: string;
+  /** Optional fee for outgoing txs */
+  fee?: bigint;
+}
+
+/**
+ * Transaction Update
+ * Data received from blockchain API for updating transaction status
+ */
+export interface TransactionUpdate {
+  /** Transaction ID being updated */
+  txid: string;
+  /** New confirmation count */
+  confirmations: number;
+  /** Block height (if confirmed) */
+  blockHeight?: number;
+  /** Block timestamp (Unix epoch seconds) */
+  blockTime?: number;
+}

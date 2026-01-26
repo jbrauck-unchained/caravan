@@ -112,6 +112,32 @@ export function useHardwareWallet(): UseHardwareWalletReturn {
         setStatus("signing");
         setProgress("Review transaction on your Ledger...");
 
+        // DEBUG: Log PSBT details
+        console.log("[HW] About to sign with these params:");
+        console.log("[HW] - PSBT (first 100 chars):", psbt.substring(0, 100));
+        console.log("[HW] - Network:", config.network);
+        console.log("[HW] - Key details:", {
+          xfp: signerKey.xfp,
+          path: signerKey.bip32Path,
+        });
+        console.log("[HW] - Wallet config keys:", config.extendedPublicKeys);
+
+        // DEBUG: Parse and inspect the PSBT
+        try {
+          const { Psbt } = await import("bitcoinjs-lib-v6");
+          const { networkData } = await import("@caravan/bitcoin");
+          const parsedPsbt = Psbt.fromBase64(psbt, {
+            network: networkData(config.network),
+          });
+          console.log("[HW] PSBT has", parsedPsbt.inputCount, "inputs");
+          console.log(
+            "[HW] First input bip32Derivation:",
+            parsedPsbt.data.inputs[0]?.bip32Derivation,
+          );
+        } catch (e) {
+          console.error("[HW] Failed to parse PSBT for debugging:", e);
+        }
+
         // Create signing interaction
         const interaction = SignMultisigTransaction({
           keystore: LEDGER,
@@ -231,6 +257,32 @@ export function useHardwareWallet(): UseHardwareWalletReturn {
 
         setStatus("signing");
         setProgress("Review transaction on your Trezor...");
+
+        // DEBUG: Log PSBT details
+        console.log("[HW] About to sign with these params:");
+        console.log("[HW] - PSBT (first 100 chars):", psbt.substring(0, 100));
+        console.log("[HW] - Network:", config.network);
+        console.log("[HW] - Key details:", {
+          xfp: signerKey.xfp,
+          path: signerKey.bip32Path,
+        });
+        console.log("[HW] - Wallet config keys:", config.extendedPublicKeys);
+
+        // DEBUG: Parse and inspect the PSBT
+        try {
+          const { Psbt } = await import("bitcoinjs-lib-v6");
+          const { networkData } = await import("@caravan/bitcoin");
+          const parsedPsbt = Psbt.fromBase64(psbt, {
+            network: networkData(config.network),
+          });
+          console.log("[HW] PSBT has", parsedPsbt.inputCount, "inputs");
+          console.log(
+            "[HW] First input bip32Derivation:",
+            parsedPsbt.data.inputs[0]?.bip32Derivation,
+          );
+        } catch (e) {
+          console.error("[HW] Failed to parse PSBT for debugging:", e);
+        }
 
         // Create signing interaction
         const interaction = SignMultisigTransaction({

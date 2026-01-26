@@ -10,11 +10,20 @@ import { persist } from "zustand/middleware";
 import { BlockchainClient, ClientType } from "@caravan/clients";
 import { Network } from "@caravan/bitcoin";
 
+export interface PrivateClientConfig {
+  url: string;
+  username: string;
+  password: string;
+  walletName?: string;
+}
+
 export interface ClientState {
   /** Current network */
   network: Network;
   /** Current blockchain provider */
   clientType: ClientType;
+  /** Private client configuration (for regtest/local node) */
+  privateClientConfig: PrivateClientConfig | null;
   /** Initialized blockchain client */
   client: BlockchainClient | null;
   /** Whether client is initializing */
@@ -25,6 +34,7 @@ export interface ClientState {
   // Actions
   setNetwork: (network: Network) => void;
   setClientType: (clientType: ClientType) => void;
+  setPrivateClientConfig: (config: PrivateClientConfig | null) => void;
   initializeClient: () => Promise<void>;
   clearError: () => void;
 }
@@ -39,6 +49,7 @@ export const useClientStore = create<ClientState>()(
       // Initial state
       network: Network.MAINNET,
       clientType: ClientType.MEMPOOL,
+      privateClientConfig: null,
       client: null,
       isInitializing: false,
       error: null,
@@ -55,9 +66,19 @@ export const useClientStore = create<ClientState>()(
         await get().initializeClient();
       },
 
+      // Set private client configuration
+      setPrivateClientConfig: (config: PrivateClientConfig | null) => {
+        console.log(
+          "[ClientStore] Setting private client config:",
+          config ? "configured" : "cleared",
+        );
+        set({ privateClientConfig: config, client: null });
+        get().initializeClient();
+      },
+
       // Initialize blockchain client
       initializeClient: async () => {
-        const { network, clientType } = get();
+        const { network, clientType, privateClientConfig } = get();
 
         set({ isInitializing: true, error: null });
 
@@ -66,11 +87,33 @@ export const useClientStore = create<ClientState>()(
             `[ClientStore] Initializing client: ${clientType} on ${network}`,
           );
 
-          // Create new blockchain client
-          const client = new BlockchainClient({
+          // Build client configuration
+          const clientConfig: any = {
             type: clientType,
             network,
-          });
+          };
+
+          // Add private client configuration if available
+          if (clientType === ClientType.PRIVATE && privateClientConfig) {
+            console.log(`[ClientStore] Using private client config:`, {
+              url: privateClientConfig.url,
+              username: privateClientConfig.username,
+              walletName: privateClientConfig.walletName,
+            });
+            clientConfig.client = {
+              url: privateClientConfig.url,
+              username: privateClientConfig.username,
+              password: privateClientConfig.password,
+              walletName: privateClientConfig.walletName,
+            };
+          } else if (clientType === ClientType.PRIVATE) {
+            throw new Error(
+              "Private client selected but no configuration provided",
+            );
+          }
+
+          // Create new blockchain client
+          const client = new BlockchainClient(clientConfig);
 
           console.log(`[ClientStore] Client created successfully`);
 
@@ -102,10 +145,11 @@ export const useClientStore = create<ClientState>()(
     }),
     {
       name: "gse-client-storage",
-      // Only persist network and clientType, not the client instance
+      // Only persist network, clientType, and privateClientConfig (not the client instance)
       partialize: (state) => ({
         network: state?.network ?? Network.MAINNET,
         clientType: state?.clientType ?? ClientType.MEMPOOL,
+        privateClientConfig: state?.privateClientConfig ?? null,
       }),
       onRehydrateStorage: () => (state, error) => {
         if (error) {
