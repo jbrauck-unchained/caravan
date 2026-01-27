@@ -6,10 +6,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { MempoolApiClient } from "@/services/mempoolApi";
 import { useTransactionStore } from "@/stores/transactionStore";
 import { useWalletStore } from "@/stores/walletStore";
-import { useClientStore } from "@/stores/clientStore";
+import { useClient, useClientStore } from "@/stores/clientStore";
 import type { UTXO } from "@/types/wallet";
 import type { MonitoredTransaction } from "@/types/transaction";
 
@@ -76,6 +75,7 @@ function groupUtxosByTxid(utxos: UTXO[]): Map<string, UTXO[]> {
  */
 export function useIncomingTransactions(): UseIncomingTransactionsReturn {
   const network = useClientStore((state) => state.network);
+  const client = useClient();
   const wallet = useWalletStore((state) => state.wallet);
   const { startMonitoring } = useTransactionStore();
 
@@ -89,14 +89,6 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
   >([]);
   const [isChecking, setIsChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Create API client
-  const apiClient = useRef(new MempoolApiClient(network));
-
-  // Update API client when network changes
-  useEffect(() => {
-    apiClient.current.setNetwork(network);
-  }, [network]);
 
   // Monitor UTXO changes
   useEffect(() => {
@@ -155,6 +147,13 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
 
     // Process new UTXOs asynchronously
     const processNewUtxos = async () => {
+      if (!client) {
+        console.warn(
+          "[IncomingTx] ⚠️ No blockchain client available, skipping incoming tx detection",
+        );
+        return;
+      }
+
       setIsChecking(true);
       setError(null);
 
@@ -165,59 +164,99 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
           `[IncomingTx] Grouped into ${groupedByTx.size} unique transactions`,
         );
 
+        // Get current block height for confirmation calculations
+        let currentHeight = 0;
+        try {
+          const heightData = await client.Get("/blocks/tip/height");
+          currentHeight =
+            typeof heightData === "number"
+              ? heightData
+              : parseInt(String(heightData), 10);
+        } catch (e) {
+          // For private nodes, we'll get height from transaction data
+          console.log("[IncomingTx] Using transaction-based block height");
+        }
+
         // Fetch transaction details for each unique txid
         const txids = Array.from(groupedByTx.keys());
-        const transactions = await apiClient.current.getTransactionBatch(txids);
+        console.log(
+          `[IncomingTx] Fetching details for ${txids.length} transactions...`,
+        );
 
         // Create MonitoredTransaction objects
         const monitoredTxs: MonitoredTransaction[] = [];
-        for (const tx of transactions) {
-          const relatedUtxos = groupedByTx.get(tx.txid) || [];
 
-          // Calculate total amount received
-          const totalAmount = relatedUtxos.reduce(
-            (sum, utxo) => sum + BigInt(utxo.value),
-            0n,
-          );
+        for (const txid of txids) {
+          try {
+            // @ts-expect-error - getTransaction exists but types may not be up to date
+            const txDetails = await client.getTransaction(txid);
+            const relatedUtxos = groupedByTx.get(txid) || [];
 
-          // Get all wallet addresses involved
-          const addresses = relatedUtxos.map((utxo) => utxo.address);
+            // Calculate total amount received
+            const totalAmount = relatedUtxos.reduce(
+              (sum, utxo) => sum + BigInt(utxo.value),
+              0n,
+            );
 
-          // Calculate confirmations
-          const confirmations = await apiClient.current.getConfirmations(tx);
+            // Get all wallet addresses involved
+            const addresses = relatedUtxos.map((utxo) => utxo.address);
 
-          // Determine status
-          let status: "mempool" | "confirming" | "confirmed";
-          if (confirmations === 0) {
-            status = "mempool";
-          } else if (confirmations < 6) {
-            status = "confirming";
-          } else {
-            status = "confirmed";
+            // Calculate confirmations
+            let confirmations = 0;
+            let blockHeight: number | undefined = undefined;
+            let blockTime: Date | undefined = undefined;
+
+            const txBlockHeight = txDetails.status?.blockHeight;
+            if (txBlockHeight && txBlockHeight > 0) {
+              blockHeight = txBlockHeight;
+              if (currentHeight === 0) {
+                currentHeight = txBlockHeight;
+              } else if (txBlockHeight > currentHeight) {
+                currentHeight = txBlockHeight;
+              }
+              confirmations = currentHeight - txBlockHeight + 1;
+              if (txDetails.status?.blockTime) {
+                blockTime = new Date(txDetails.status.blockTime * 1000);
+              }
+            }
+
+            // Determine status
+            let status: "mempool" | "confirming" | "confirmed";
+            if (confirmations === 0) {
+              status = "mempool";
+            } else if (confirmations < 6) {
+              status = "confirming";
+            } else {
+              status = "confirmed";
+            }
+
+            const monitoredTx: MonitoredTransaction = {
+              txid,
+              direction: "incoming",
+              confirmations,
+              status,
+              firstSeen: new Date(),
+              lastChecked: new Date(),
+              blockHeight,
+              blockTime,
+              amount: totalAmount,
+              addresses,
+            };
+
+            monitoredTxs.push(monitoredTx);
+
+            // Add to monitoring
+            startMonitoring(monitoredTx);
+            console.log(
+              `[IncomingTx] ✓ Added ${txid} to monitoring (${totalAmount} sats, ${confirmations} conf)`,
+            );
+          } catch (txErr) {
+            console.error(
+              `[IncomingTx] ❌ Failed to fetch transaction ${txid}:`,
+              txErr,
+            );
+            // Continue with other transactions
           }
-
-          const monitoredTx: MonitoredTransaction = {
-            txid: tx.txid,
-            direction: "incoming",
-            confirmations,
-            status,
-            firstSeen: new Date(),
-            lastChecked: new Date(),
-            blockHeight: tx.status.block_height,
-            blockTime: tx.status.block_time
-              ? new Date(tx.status.block_time * 1000)
-              : undefined,
-            amount: totalAmount,
-            addresses,
-          };
-
-          monitoredTxs.push(monitoredTx);
-
-          // Add to monitoring
-          startMonitoring(monitoredTx);
-          console.log(
-            `[IncomingTx] ✓ Added ${tx.txid} to monitoring (${totalAmount} sats, ${confirmations} conf)`,
-          );
         }
 
         // Update state with new transactions
@@ -245,7 +284,7 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
       utxoMap.set(getUtxoKey(utxo), utxo);
     }
     previousUtxosRef.current = utxoMap;
-  }, [wallet, network, isInitialized, startMonitoring]);
+  }, [wallet, network, client, isInitialized, startMonitoring]);
 
   return {
     newTransactions,
