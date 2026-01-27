@@ -52,14 +52,17 @@ async function fetchAddressData(
     }
 
     // Map UTXOs to our format
+    // Note: Bitcoin Core returns 'index' instead of 'vout', and 'amountSats' instead of 'value'
+    // Public explorers use 'vout' and 'value'
     const mapped = utxos.map((utxo: any) => {
       console.log(`[Sync] Processing UTXO:`, utxo);
       return {
         txid: utxo.txid,
-        vout: utxo.vout,
-        value: utxo.value,
+        vout: utxo.vout ?? utxo.index, // Bitcoin Core uses 'index'
+        value:
+          utxo.value ?? (utxo.amountSats ? parseInt(utxo.amountSats, 10) : 0), // Bitcoin Core uses 'amountSats' as string
         address,
-        confirmed: utxo.status?.confirmed ?? false,
+        confirmed: utxo.confirmed ?? utxo.status?.confirmed ?? false,
         blockHeight: utxo.status?.block_height,
       };
     });

@@ -49,7 +49,7 @@ export function Bank() {
   // Calculate selected balance
   const selectedBalance = utxos
     .filter((utxo) => selectedUTXOs.has(`${utxo.txid}:${utxo.vout}`))
-    .reduce((sum, utxo) => sum + utxo.value, 0);
+    .reduce((sum, utxo) => sum + (utxo.value || 0), 0);
 
   // Create 28 slots (7x4 grid like OSRS)
   const slots = Array.from({ length: 28 }, (_, i) => {
@@ -63,7 +63,7 @@ export function Bank() {
         selected={isSelected}
         onClick={utxo ? () => toggleUTXO(utxo.txid, utxo.vout) : undefined}
       >
-        {utxo && (
+        {utxo && utxo.value !== undefined && !isNaN(utxo.value) && (
           <Tooltip
             content={`${utxo.value.toLocaleString()} sats${utxo.confirmed ? " (confirmed)" : " (unconfirmed)"}`}
           >
