@@ -98,24 +98,175 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
 
     const currentUtxos = wallet.utxos;
 
-    // On first load, just store the UTXOs without triggering detection
+    // On first load, backfill unconfirmed/recently confirmed transactions
     if (!isInitialized) {
       console.log(
         "[IncomingTx] 📥 Initializing with",
         currentUtxos.length,
         "UTXOs",
       );
-      console.log(
-        "[IncomingTx] UTXO keys:",
-        currentUtxos.map((u) => getUtxoKey(u)),
-      );
+
+      // Find UTXOs that are unconfirmed or have < 6 confirmations
+      // These are "recent" and should be monitored
+      const recentUtxos = currentUtxos.filter((utxo) => {
+        // If we don't have confirmation data, skip it (it's old)
+        if (utxo.confirmed === undefined) return false;
+
+        // Unconfirmed transactions
+        if (!utxo.confirmed) return true;
+
+        // For confirmed UTXOs, we need to check confirmations
+        // Note: We don't have confirmation count in UTXO type, only confirmed boolean
+        // So we'll treat all unconfirmed as "recent" and process them
+        return false; // Only unconfirmed for now
+      });
+
+      if (recentUtxos.length > 0) {
+        console.log(
+          `[IncomingTx] 🔍 Found ${recentUtxos.length} unconfirmed UTXOs to backfill:`,
+          recentUtxos.map((u) => getUtxoKey(u)),
+        );
+        // Process these as "new" transactions
+        // Fall through to the processing logic below
+      } else {
+        console.log("[IncomingTx] No unconfirmed UTXOs to backfill");
+      }
+
       const utxoMap = new Map<string, UTXO>();
       for (const utxo of currentUtxos) {
         utxoMap.set(getUtxoKey(utxo), utxo);
       }
       previousUtxosRef.current = utxoMap;
       setIsInitialized(true);
-      console.log("[IncomingTx] ✓ Initialization complete");
+
+      // If we have recent UTXOs to backfill, treat them as "new"
+      if (recentUtxos.length === 0) {
+        console.log("[IncomingTx] ✓ Initialization complete");
+        return;
+      }
+
+      // Continue to process recentUtxos as newUtxos
+      console.log(
+        "[IncomingTx] ✓ Initialization complete, processing recent UTXOs...",
+      );
+      // Set currentUtxos to recentUtxos for processing
+      const newUtxos = recentUtxos;
+
+      // Process immediately (same logic as below)
+      const processBackfill = async () => {
+        if (!client) {
+          console.warn(
+            "[IncomingTx] ⚠️ No blockchain client available, skipping backfill",
+          );
+          return;
+        }
+
+        setIsChecking(true);
+        setError(null);
+
+        try {
+          const groupedByTx = groupUtxosByTxid(newUtxos);
+          console.log(
+            `[IncomingTx] Grouped backfill into ${groupedByTx.size} unique transactions`,
+          );
+
+          let currentHeight = 0;
+          try {
+            const heightData = await client.Get("/blocks/tip/height");
+            currentHeight =
+              typeof heightData === "number"
+                ? heightData
+                : parseInt(String(heightData), 10);
+          } catch (e) {
+            console.log("[IncomingTx] Using transaction-based block height");
+          }
+
+          const txids = Array.from(groupedByTx.keys());
+          console.log(
+            `[IncomingTx] Backfilling ${txids.length} transactions...`,
+          );
+
+          const monitoredTxs: MonitoredTransaction[] = [];
+
+          for (const txid of txids) {
+            try {
+              // @ts-expect-error - getTransaction exists but types may not be up to date
+              const txDetails = await client.getTransaction(txid);
+              const relatedUtxos = groupedByTx.get(txid) || [];
+
+              const totalAmount = relatedUtxos.reduce(
+                (sum, utxo) => sum + BigInt(utxo.value),
+                0n,
+              );
+
+              const addresses = relatedUtxos.map((utxo) => utxo.address);
+
+              let confirmations = 0;
+              let blockHeight: number | undefined = undefined;
+              let blockTime: Date | undefined = undefined;
+
+              const txBlockHeight = txDetails.status?.blockHeight;
+              if (txBlockHeight && txBlockHeight > 0) {
+                blockHeight = txBlockHeight;
+                if (currentHeight === 0) {
+                  currentHeight = txBlockHeight;
+                } else if (txBlockHeight > currentHeight) {
+                  currentHeight = txBlockHeight;
+                }
+                confirmations = currentHeight - txBlockHeight + 1;
+                if (txDetails.status?.blockTime) {
+                  blockTime = new Date(txDetails.status.blockTime * 1000);
+                }
+              }
+
+              let status: "mempool" | "confirming" | "confirmed";
+              if (confirmations === 0) {
+                status = "mempool";
+              } else if (confirmations < 6) {
+                status = "confirming";
+              } else {
+                status = "confirmed";
+              }
+
+              const monitoredTx: MonitoredTransaction = {
+                txid,
+                direction: "incoming",
+                confirmations,
+                status,
+                firstSeen: new Date(),
+                lastChecked: new Date(),
+                blockHeight,
+                blockTime,
+                amount: totalAmount,
+                addresses,
+              };
+
+              monitoredTxs.push(monitoredTx);
+              startMonitoring(monitoredTx);
+              console.log(
+                `[IncomingTx] ✓ Backfilled ${txid.substring(0, 8)}... (${totalAmount} sats, ${confirmations} conf)`,
+              );
+            } catch (txErr) {
+              console.error(
+                `[IncomingTx] ❌ Failed to backfill transaction ${txid}:`,
+                txErr,
+              );
+            }
+          }
+
+          setNewTransactions(monitoredTxs);
+          setTimeout(() => setNewTransactions([]), 5000);
+        } catch (err) {
+          const errorMessage =
+            err instanceof Error ? err.message : "Unknown error";
+          console.error("[IncomingTx] ❌ Failed to backfill:", err);
+          setError(errorMessage);
+        } finally {
+          setIsChecking(false);
+        }
+      };
+
+      processBackfill();
       return;
     }
 
