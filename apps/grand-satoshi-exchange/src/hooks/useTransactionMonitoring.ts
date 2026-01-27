@@ -102,6 +102,7 @@ export function useTransactionMonitoring(
     queryKey: [
       "transaction-monitoring",
       network,
+      hasClient, // Include client availability in query key
       monitoredTransactions
         .map((tx) => tx.txid)
         .sort()
@@ -260,6 +261,15 @@ export function useTransactionMonitoring(
 
   // Log state changes
   useEffect(() => {
+    console.log(`[TxMonitor] State check:`, {
+      hasClient,
+      hasTransactions,
+      enabled,
+      shouldPoll,
+      transactionCount: monitoredTransactions.length,
+      network,
+    });
+
     if (!hasClient) {
       console.warn(
         `[TxMonitor] ⚠️ Monitoring disabled: No blockchain client available`,
@@ -280,6 +290,7 @@ export function useTransactionMonitoring(
     enabled,
     hasTransactions,
     hasClient,
+    network,
   ]);
 
   return {
