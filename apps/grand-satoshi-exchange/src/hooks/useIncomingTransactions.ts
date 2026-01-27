@@ -206,6 +206,12 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
               let blockTime: Date | undefined = undefined;
 
               const txBlockHeight = txDetails.status?.blockHeight;
+              console.log(`[IncomingTx] TX ${txid.substring(0, 8)} status:`, {
+                txBlockHeight,
+                currentHeight,
+                statusObj: txDetails.status,
+              });
+
               if (txBlockHeight && txBlockHeight > 0) {
                 blockHeight = txBlockHeight;
                 if (currentHeight === 0) {
@@ -214,9 +220,18 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
                   currentHeight = txBlockHeight;
                 }
                 confirmations = currentHeight - txBlockHeight + 1;
+                console.log(`[IncomingTx] Calculated confirmations:`, {
+                  txBlockHeight,
+                  currentHeight,
+                  confirmations,
+                });
                 if (txDetails.status?.blockTime) {
                   blockTime = new Date(txDetails.status.blockTime * 1000);
                 }
+              } else {
+                console.warn(
+                  `[IncomingTx] No block height for ${txid.substring(0, 8)}, treating as unconfirmed`,
+                );
               }
 
               let status: "mempool" | "confirming" | "confirmed";
@@ -358,6 +373,12 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
             let blockTime: Date | undefined = undefined;
 
             const txBlockHeight = txDetails.status?.blockHeight;
+            console.log(`[IncomingTx] New TX ${txid.substring(0, 8)} status:`, {
+              txBlockHeight,
+              currentHeight,
+              statusObj: txDetails.status,
+            });
+
             if (txBlockHeight && txBlockHeight > 0) {
               blockHeight = txBlockHeight;
               if (currentHeight === 0) {
@@ -366,9 +387,18 @@ export function useIncomingTransactions(): UseIncomingTransactionsReturn {
                 currentHeight = txBlockHeight;
               }
               confirmations = currentHeight - txBlockHeight + 1;
+              console.log(`[IncomingTx] Calculated confirmations:`, {
+                txBlockHeight,
+                currentHeight,
+                confirmations,
+              });
               if (txDetails.status?.blockTime) {
                 blockTime = new Date(txDetails.status.blockTime * 1000);
               }
+            } else {
+              console.warn(
+                `[IncomingTx] No block height for ${txid.substring(0, 8)}, treating as unconfirmed`,
+              );
             }
 
             // Determine status

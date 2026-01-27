@@ -259,7 +259,7 @@ export function useTransactionMonitoring(
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   });
 
-  // Log state changes
+  // Log state changes and trigger initial fetch when transactions appear
   useEffect(() => {
     console.log(`[TxMonitor] State check:`, {
       hasClient,
@@ -278,6 +278,8 @@ export function useTransactionMonitoring(
       console.log(
         `[TxMonitor] 📡 Monitoring ${monitoredTransactions.length} transactions (poll every ${pollInterval}ms)`,
       );
+      // Trigger an immediate fetch when monitoring starts
+      refetch();
     } else if (enabled && !hasTransactions) {
       console.log("[TxMonitor] 💤 No transactions to monitor");
     } else if (!enabled) {
@@ -291,6 +293,7 @@ export function useTransactionMonitoring(
     hasTransactions,
     hasClient,
     network,
+    refetch,
   ]);
 
   return {
