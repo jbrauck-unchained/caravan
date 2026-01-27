@@ -1,19 +1,19 @@
 /**
- * Grand Satoshi Exchange - Exchange View (Refactored)
+ * Grand Satoshi Exchange - Exchange View
  *
- * Unified collection slot system showing both incoming and outgoing transactions
+ * Displays pending transaction offers in OSRS Grand Exchange style.
  */
 
-import { useState, useMemo } from "react";
-import { CollectionSlot } from "../components/exchange/CollectionSlot";
-import { TransactionTypeModal } from "../components/exchange/TransactionTypeModal";
+import { useState } from "react";
+import { OfferSlot } from "../components/exchange/OfferSlot";
 import { CreateOfferModal } from "../components/exchange/CreateOfferModal";
 import { SigningModal } from "../components/hardware/SigningModal";
 import { OfferCompleteModal } from "../components/exchange/OfferCompleteModal";
+import { MonitoredTransactionsPanel } from "../components/exchange/MonitoredTransactionsPanel";
+import { TransactionArchivePanel } from "../components/exchange/TransactionArchivePanel";
 import { ConfirmDialog } from "../components/ui/Modal";
 import {
   usePendingOffers,
-  useMonitoredTransactions,
   useTransactionStore,
 } from "@/stores/transactionStore";
 import { useHasWallet } from "@/stores/walletStore";
@@ -22,11 +22,8 @@ import { broadcastTransaction } from "@/utils/broadcast";
 import { useTransactionMonitoring } from "@/hooks/useTransactionMonitoring";
 import { useIncomingTransactions } from "@/hooks/useIncomingTransactions";
 import type { SignatureSet, CompletedTransaction } from "@/types/transaction";
-import type { ExchangeSlotData } from "@/types/exchangeSlot";
 
 export function Exchange() {
-  // Modals
-  const [showTypeModal, setShowTypeModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showSigningModal, setShowSigningModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
@@ -37,19 +34,18 @@ export function Exchange() {
     null,
   );
 
-  // Get data from stores
+  // Get pending offers from store
   const pendingOffers = usePendingOffers();
-  const monitoredTransactions = useMonitoredTransactions();
   const hasWallet = useHasWallet();
   const client = useClient();
-  const network = useClientStore((state) => state.network);
 
+  // Get selected offer - must use the store directly to avoid conditional hook call
   const selectedOffer = useTransactionStore((state) =>
     selectedOfferId
       ? state.pendingOffers.find((o) => o.id === selectedOfferId)
       : null,
   );
-
+  const network = useClientStore((state) => state.network);
   const {
     removeOffer,
     updateOfferStatus,
@@ -61,57 +57,35 @@ export function Exchange() {
   // Initialize transaction monitoring
   useTransactionMonitoring({
     pollInterval: 30000, // 30 seconds
-    confirmationsForArchive: 10, // Auto-archive after 10 confirmations
+    confirmationsForArchive: 6,
   });
 
   // Initialize incoming transaction detection
   useIncomingTransactions();
 
-  // Merge pending offers and monitored transactions into 8 slots
-  const slots: ExchangeSlotData[] = useMemo(() => {
-    const result: ExchangeSlotData[] = [];
-
-    // Add pending offers (outgoing)
-    for (const offer of pendingOffers) {
-      result.push({ type: "outgoing", data: offer });
-    }
-
-    // Add monitored transactions that are < 10 confirmations (incoming)
-    for (const tx of monitoredTransactions) {
-      if (tx.confirmations < 10) {
-        result.push({ type: "incoming", data: tx });
-      }
-    }
-
-    // Fill remaining slots with empty
-    while (result.length < 8) {
-      result.push({ type: "empty", data: null });
-    }
-
-    // Take only first 8 slots
-    return result.slice(0, 8);
-  }, [pendingOffers, monitoredTransactions]);
+  // Create 8 slots
+  const slots = Array.from({ length: 8 }, (_, index) => {
+    const offer = pendingOffers[index] ?? null;
+    return {
+      slotNumber: index + 1,
+      offer,
+    };
+  });
 
   // Handlers
-  const handleSlotClick = () => {
-    setShowTypeModal(true);
-  };
-
-  const handleSelectSend = () => {
+  const handleCreateNew = () => {
+    console.log("[Exchange] Create new offer clicked");
     setShowCreateModal(true);
-  };
-
-  const handleSelectReceive = () => {
-    // TODO: Show receive address modal
-    alert(
-      "Receive functionality coming soon! Go to Bank view to generate addresses.",
-    );
+    // TODO: Open CreateOfferModal
   };
 
   const handleSign = (offerId: string) => {
+    console.log("[Exchange] handleSign called");
     console.log("[Exchange] Sign offer:", offerId);
+    console.log("[Exchange] Current showSigningModal:", showSigningModal);
     setSelectedOfferId(offerId);
     setShowSigningModal(true);
+    console.log("[Exchange] After setState - showSigningModal should be true");
   };
 
   const handleSignatureCollected = (signature: SignatureSet) => {
@@ -181,10 +155,13 @@ export function Exchange() {
       // Show completion modal
       setCompletedTx(completedTx);
       setShowCompleteModal(true);
+
+      // TODO: Trigger UTXO refresh (will implement when we add the method to wallet store)
     } catch (error) {
       console.error("[Exchange] Broadcast failed:", error);
       updateOfferStatus(offerId, "pending");
 
+      // Show error to user
       alert(
         `Broadcast failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -199,40 +176,17 @@ export function Exchange() {
 
   const confirmCancel = () => {
     if (offerToCancel) {
-      console.log("[Exchange] Confirming cancel:", offerToCancel);
       removeOffer(offerToCancel);
       setOfferToCancel(null);
     }
-    setCancelDialogOpen(false);
   };
 
-  const handleViewIncoming = (txid: string) => {
-    const tx = monitoredTransactions.find((t) => t.txid === txid);
-    if (!tx) return;
-
-    // TODO: Show transaction details modal
-    const explorerUrl =
-      network === "mainnet"
-        ? `https://mempool.space/tx/${txid}`
-        : network === "testnet"
-          ? `https://mempool.space/testnet/tx/${txid}`
-          : null;
-
-    if (explorerUrl) {
-      window.open(explorerUrl, "_blank");
-    } else {
-      alert(`Transaction: ${txid}\nConfirmations: ${tx.confirmations}`);
-    }
-  };
-
-  // No wallet loaded state
+  // No wallet loaded
   if (!hasWallet) {
     return (
-      <div style={{ padding: "40px" }}>
+      <div style={{ padding: "20px" }}>
         <div
           style={{
-            maxWidth: "600px",
-            margin: "0 auto",
             padding: "40px",
             textAlign: "center",
             backgroundColor: "var(--osrs-brown-dark)",
@@ -256,7 +210,7 @@ export function Exchange() {
               fontSize: "14px",
             }}
           >
-            Please import a wallet from the Bank view to use the Exchange.
+            Please import a wallet from the Bank view to create offers.
           </p>
         </div>
       </div>
@@ -273,10 +227,15 @@ export function Exchange() {
           fontSize: "20px",
         }}
       >
-        Grand Exchange (Collection Box)
+        Grand Exchange (Pending Transactions)
       </h3>
 
-      {/* 8 Collection Slots in 2x4 grid */}
+      {/* Transaction Monitoring Panel */}
+      <div style={{ marginBottom: "24px" }}>
+        <MonitoredTransactionsPanel />
+      </div>
+
+      {/* 8 Offer Slots in 2x4 grid */}
       <div
         style={{
           display: "grid",
@@ -285,83 +244,94 @@ export function Exchange() {
           marginBottom: "24px",
         }}
       >
-        {slots.map((slot, index) => (
-          <CollectionSlot
-            key={index}
-            slotNumber={index + 1}
-            slot={slot}
-            onClickEmpty={handleSlotClick}
+        {slots.map(({ slotNumber, offer }) => (
+          <OfferSlot
+            key={slotNumber}
+            slotNumber={slotNumber}
+            offer={offer}
+            onCreateNew={handleCreateNew}
             onSign={handleSign}
             onBroadcast={handleBroadcast}
-            onCancelOffer={handleCancel}
-            onViewIncoming={handleViewIncoming}
+            onCancel={handleCancel}
           />
         ))}
       </div>
 
-      {/* Instructions */}
+      {/* Collection Box (for completed transactions) */}
       <div
         style={{
           padding: "16px",
           backgroundColor: "var(--osrs-brown-medium)",
           border: "2px solid var(--inv-slot-border)",
           borderRadius: "4px",
-          marginBottom: "24px",
         }}
       >
         <h4
           style={{
             color: "var(--osrs-text-yellow)",
             marginBottom: "8px",
-            fontSize: "14px",
+            fontSize: "16px",
           }}
         >
-          How to use the Collection Box
+          Collection Box
         </h4>
-        <ul
+        <p
+          style={{
+            color: "var(--osrs-text-gray)",
+            fontSize: "12px",
+            fontStyle: "italic",
+          }}
+        >
+          Completed transactions will appear here
+        </p>
+      </div>
+
+      {/* Instructions */}
+      <div
+        style={{
+          marginTop: "16px",
+          padding: "12px",
+          backgroundColor: "var(--osrs-brown-dark)",
+          borderRadius: "4px",
+          border: "2px solid var(--inv-slot-border)",
+        }}
+      >
+        <p
           style={{
             color: "var(--osrs-text-white)",
             fontSize: "12px",
-            lineHeight: "1.6",
-            paddingLeft: "20px",
+            lineHeight: "1.5",
           }}
         >
-          <li>Click an empty slot to choose Send or Receive</li>
-          <li>
-            Outgoing transactions show signature progress and confirmations
-          </li>
-          <li>
-            Incoming transactions appear automatically and show confirmations
-          </li>
-          <li>Transactions auto-remove after 10 confirmations</li>
-          <li>Gold progress bar = 0-5 confirmations or partial signatures</li>
-          <li>Green progress bar = 6-10 confirmations or ready to broadcast</li>
-        </ul>
+          💡 <strong>How it works:</strong> Create an offer to send bitcoin.
+          Sign with your hardware wallet(s). Once enough signatures are
+          collected, broadcast the transaction to the network!
+        </p>
       </div>
 
-      {/* Modals */}
-      <TransactionTypeModal
-        isOpen={showTypeModal}
-        onClose={() => setShowTypeModal(false)}
-        onSelectSend={handleSelectSend}
-        onSelectReceive={handleSelectReceive}
-      />
+      {/* Transaction Archive Panel */}
+      <div style={{ marginTop: "24px" }}>
+        <TransactionArchivePanel />
+      </div>
 
+      {/* Create Offer Modal */}
       <CreateOfferModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
       />
 
+      {/* Signing Modal */}
       <SigningModal
         isOpen={showSigningModal}
         onClose={() => {
           setShowSigningModal(false);
           setSelectedOfferId(null);
         }}
-        offer={selectedOffer || null}
+        offer={selectedOffer ?? null}
         onSignatureCollected={handleSignatureCollected}
       />
 
+      {/* Offer Complete Modal */}
       {completedTx && (
         <OfferCompleteModal
           isOpen={showCompleteModal}
@@ -377,12 +347,16 @@ export function Exchange() {
         />
       )}
 
+      {/* Cancel Confirmation Dialog */}
       <ConfirmDialog
         isOpen={cancelDialogOpen}
         onClose={() => setCancelDialogOpen(false)}
         onConfirm={confirmCancel}
         title="Cancel Offer"
         message="Are you sure you want to cancel this offer? This action cannot be undone."
+        confirmText="Yes, Cancel Offer"
+        cancelText="No, Keep It"
+        confirmVariant="danger"
       />
     </div>
   );
