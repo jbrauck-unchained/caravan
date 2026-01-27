@@ -4,19 +4,61 @@
  * Configuration for network, blockchain provider, and wallet management.
  */
 
+import { useState, useEffect } from "react";
 import { Button } from "../components/ui/Button";
 import {
   useClientStore,
   getNetworkName,
   getClientTypeName,
+  PrivateClientConfig,
 } from "@/stores/clientStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { Network } from "@caravan/bitcoin";
 import { ClientType } from "@caravan/clients";
 
 export function Settings() {
-  const { network, clientType, setNetwork, setClientType } = useClientStore();
+  const {
+    network,
+    clientType,
+    privateClientConfig,
+    setNetwork,
+    setClientType,
+    setPrivateClientConfig,
+  } = useClientStore();
   const { clearWallet, wallet } = useWalletStore();
+
+  // Local state for private client form
+  const [privateUrl, setPrivateUrl] = useState(
+    privateClientConfig?.url ||
+      (network === Network.REGTEST ? "http://localhost:18443" : ""),
+  );
+  const [privateUsername, setPrivateUsername] = useState(
+    privateClientConfig?.username || "",
+  );
+  const [privatePassword, setPrivatePassword] = useState(
+    privateClientConfig?.password || "",
+  );
+  const [privateWalletName, setPrivateWalletName] = useState(
+    privateClientConfig?.walletName || "",
+  );
+
+  // Update form when privateClientConfig changes from store
+  useEffect(() => {
+    if (privateClientConfig) {
+      setPrivateUrl(privateClientConfig.url);
+      setPrivateUsername(privateClientConfig.username);
+      setPrivatePassword(privateClientConfig.password);
+      setPrivateWalletName(privateClientConfig.walletName || "");
+    }
+  }, [privateClientConfig]);
+
+  // Update default URL when network changes
+  useEffect(() => {
+    if (clientType === ClientType.PRIVATE && !privateUrl) {
+      const defaultPort = network === Network.REGTEST ? 18443 : 18332;
+      setPrivateUrl(`http://localhost:${defaultPort}`);
+    }
+  }, [network, clientType, privateUrl]);
 
   const handleNetworkChange = async (newNetwork: Network) => {
     if (network === newNetwork) return;
@@ -66,6 +108,46 @@ export function Settings() {
     if (confirmed) {
       clearWallet();
     }
+  };
+
+  const handleSavePrivateConfig = () => {
+    if (!privateUrl.trim()) {
+      alert("Please enter a URL for your private Bitcoin node");
+      return;
+    }
+    if (!privateUsername.trim()) {
+      alert("Please enter RPC username");
+      return;
+    }
+    if (!privatePassword.trim()) {
+      alert("Please enter RPC password");
+      return;
+    }
+
+    const config: PrivateClientConfig = {
+      url: privateUrl.trim(),
+      username: privateUsername.trim(),
+      password: privatePassword.trim(),
+      walletName: privateWalletName.trim() || undefined,
+    };
+
+    setPrivateClientConfig(config);
+    alert("Private node configuration saved!");
+  };
+
+  const handleTestConnection = async () => {
+    if (
+      !privateUrl.trim() ||
+      !privateUsername.trim() ||
+      !privatePassword.trim()
+    ) {
+      alert("Please fill in all required fields first");
+      return;
+    }
+
+    alert(
+      "Connection testing will be implemented in a future update.\n\nFor now, the configuration will be saved and used when you switch to Private mode.",
+    );
   };
 
   return (
@@ -203,6 +285,200 @@ export function Settings() {
           </Button>
         </div>
       </div>
+
+      {/* Private Node Configuration - Only show when Private is selected */}
+      {clientType === ClientType.PRIVATE && (
+        <div
+          style={{
+            padding: "16px",
+            backgroundColor: "var(--osrs-brown-dark)",
+            border: "2px solid var(--inv-slot-border)",
+            borderRadius: "4px",
+            marginBottom: "16px",
+          }}
+        >
+          <h4
+            style={{
+              color: "var(--osrs-text-yellow)",
+              fontSize: "14px",
+              marginBottom: "8px",
+            }}
+          >
+            Private Node Configuration
+          </h4>
+          <p
+            style={{
+              color: "#888",
+              fontSize: "11px",
+              marginBottom: "12px",
+              lineHeight: "1.4",
+            }}
+          >
+            Configure connection to your private Bitcoin Core node. Required for
+            regtest networks.
+          </p>
+
+          {/* URL Input */}
+          <div style={{ marginBottom: "12px" }}>
+            <label
+              style={{
+                display: "block",
+                color: "var(--osrs-text-orange)",
+                fontSize: "12px",
+                marginBottom: "4px",
+              }}
+            >
+              RPC URL *
+            </label>
+            <input
+              type="text"
+              value={privateUrl}
+              onChange={(e) => setPrivateUrl(e.target.value)}
+              placeholder="http://localhost:18443"
+              style={{
+                width: "100%",
+                padding: "6px 8px",
+                fontSize: "12px",
+                backgroundColor: "var(--osrs-brown-medium)",
+                color: "var(--osrs-text-white)",
+                border: "2px solid var(--inv-slot-border)",
+                borderRadius: "4px",
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          {/* Username Input */}
+          <div style={{ marginBottom: "12px" }}>
+            <label
+              style={{
+                display: "block",
+                color: "var(--osrs-text-orange)",
+                fontSize: "12px",
+                marginBottom: "4px",
+              }}
+            >
+              RPC Username *
+            </label>
+            <input
+              type="text"
+              value={privateUsername}
+              onChange={(e) => setPrivateUsername(e.target.value)}
+              placeholder="bitcoin_rpc_user"
+              autoComplete="username"
+              style={{
+                width: "100%",
+                padding: "6px 8px",
+                fontSize: "12px",
+                backgroundColor: "var(--osrs-brown-medium)",
+                color: "var(--osrs-text-white)",
+                border: "2px solid var(--inv-slot-border)",
+                borderRadius: "4px",
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          {/* Password Input */}
+          <div style={{ marginBottom: "12px" }}>
+            <label
+              style={{
+                display: "block",
+                color: "var(--osrs-text-orange)",
+                fontSize: "12px",
+                marginBottom: "4px",
+              }}
+            >
+              RPC Password *
+            </label>
+            <input
+              type="password"
+              value={privatePassword}
+              onChange={(e) => setPrivatePassword(e.target.value)}
+              placeholder="••••••••"
+              autoComplete="current-password"
+              style={{
+                width: "100%",
+                padding: "6px 8px",
+                fontSize: "12px",
+                backgroundColor: "var(--osrs-brown-medium)",
+                color: "var(--osrs-text-white)",
+                border: "2px solid var(--inv-slot-border)",
+                borderRadius: "4px",
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          {/* Wallet Name Input (Optional) */}
+          <div style={{ marginBottom: "12px" }}>
+            <label
+              style={{
+                display: "block",
+                color: "var(--osrs-text-orange)",
+                fontSize: "12px",
+                marginBottom: "4px",
+              }}
+            >
+              Wallet Name (optional)
+            </label>
+            <input
+              type="text"
+              value={privateWalletName}
+              onChange={(e) => setPrivateWalletName(e.target.value)}
+              placeholder="Leave empty for default wallet"
+              style={{
+                width: "100%",
+                padding: "6px 8px",
+                fontSize: "12px",
+                backgroundColor: "var(--osrs-brown-medium)",
+                color: "var(--osrs-text-white)",
+                border: "2px solid var(--inv-slot-border)",
+                borderRadius: "4px",
+                fontFamily: "inherit",
+              }}
+            />
+            <p
+              style={{
+                color: "#888",
+                fontSize: "10px",
+                marginTop: "4px",
+                fontStyle: "italic",
+              }}
+            >
+              For multi-wallet Bitcoin Core setups
+            </p>
+          </div>
+
+          {/* Action Buttons */}
+          <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
+            <Button onClick={handleSavePrivateConfig}>
+              Save Configuration
+            </Button>
+            <Button variant="secondary" onClick={handleTestConnection}>
+              Test Connection
+            </Button>
+          </div>
+
+          {/* Help Text */}
+          <div
+            style={{
+              marginTop: "12px",
+              padding: "8px",
+              background: "rgba(255, 165, 0, 0.1)",
+              border: "1px solid #ff9900",
+              borderRadius: "4px",
+              color: "#ffcc66",
+              fontSize: "11px",
+              lineHeight: "1.4",
+            }}
+          >
+            <strong>⚠️ Important:</strong> Bitcoin Core does not support CORS by
+            default. You may need to run a CORS proxy (nginx or corsproxy) to
+            connect from the browser.
+          </div>
+        </div>
+      )}
 
       {/* Wallet Management */}
       <div
