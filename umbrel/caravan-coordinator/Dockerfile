@@ -1,5 +1,7 @@
-# Build Caravan Coordinator from source
-# This builds from the fork so the Umbrel UI changes are included.
+# Build Caravan Coordinator from source with Umbrel RPC proxy.
+# Run from the caravan repo root:
+#   docker build -f umbrel/caravan-coordinator/Dockerfile \
+#     -t ghcr.io/jbrauck-unchained/caravan-coordinator-umbrel:v1.0.0 .
 
 FROM --platform=$BUILDPLATFORM node:20.19.3-bookworm-slim AS base
 
@@ -13,7 +15,7 @@ RUN apt-get update --yes && \
 
 WORKDIR /app
 RUN npm install -g turbo
-COPY caravan/ .
+COPY . .
 RUN turbo prune caravan-coordinator --docker
 
 # Install dependencies and build
@@ -39,8 +41,8 @@ COPY --from=installer /app/apps/coordinator/build /usr/share/nginx/html/
 RUN rm -f /etc/nginx/conf.d/default.conf
 
 # Add the Umbrel RPC proxy nginx template and entrypoint
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY entrypoint.sh /entrypoint.sh
+COPY umbrel/caravan-coordinator/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY umbrel/caravan-coordinator/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 8080
