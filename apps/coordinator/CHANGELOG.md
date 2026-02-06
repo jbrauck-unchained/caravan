@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.3
+
+### Patch Changes
+
+- [`2830f33`](https://github.com/caravan-bitcoin/caravan/commit/2830f338be686815a1b750423af06b4f57a5ad92) Thanks [@jbrauck-unchained](https://github.com/jbrauck-unchained)! - I fixed transaction history row duplication when querying public clients
+
 ## 1.18.2
 
 ### Patch Changes
