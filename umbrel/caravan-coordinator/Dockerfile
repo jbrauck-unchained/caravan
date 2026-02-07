@@ -7,11 +7,11 @@ FROM --platform=$BUILDPLATFORM node:20.19.3-bookworm-slim AS base
 
 # Install OS dependencies
 FROM base AS builder
-ENV DEBIAN_FRONTEND noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update --yes && \
     apt-get upgrade --yes && \
     apt-get install --yes --no-install-recommends \
-    build-essential
+    build-essential git
 
 WORKDIR /app
 RUN npm install -g turbo
@@ -27,7 +27,7 @@ COPY --from=builder /app/scripts ./scripts
 RUN npm ci
 
 COPY --from=builder /app/out/full/ .
-ENV NODE_OPTIONS=--max-old-space-size=32768
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npx turbo run build --filter=caravan-coordinator...
 
 # Final image: nginx serving static files + RPC proxy to Umbrel Bitcoin Core
