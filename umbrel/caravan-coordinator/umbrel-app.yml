@@ -23,7 +23,7 @@ dependencies:
   - bitcoin
 repo: https://github.com/caravan-bitcoin/caravan
 support: https://github.com/caravan-bitcoin/caravan/issues
-port: 8080
+port: 3420
 gallery: []
 path: ""
 defaultUsername: ""
