@@ -1,11 +1,16 @@
-import {
-  bip32SerializationNetwork,
-  ExtendedPublicKey,
-  BitcoinNetwork,
-} from "@caravan/bitcoin";
+import { ExtendedPublicKey, BitcoinNetwork, Network } from "@caravan/bitcoin";
 import { CryptoHDKey, CryptoAccount } from "@keystonehq/bc-ur-registry";
 
 import { ExtendedPublicKeyData } from "./decoder";
+
+/**
+ * BIP32 extended keys have only mainnet and testnet serialization families.
+ */
+export function bip32SerializationNetwork(
+  network: BitcoinNetwork
+): Network.MAINNET | Network.TESTNET {
+  return network === Network.MAINNET ? Network.MAINNET : Network.TESTNET;
+}
 
 /**
  * Process a CBOR buffer containing crypto-account data and extract extended public key information
@@ -50,9 +55,6 @@ function processHDKey(
   network: BitcoinNetwork,
   type: "crypto-account" | "crypto-hdkey"
 ): ExtendedPublicKeyData {
-  // Compatibility policy: the caller's application network is authoritative.
-  // Embedded useInfo contradictions are intentionally not enforced yet; tests
-  // freeze this behavior until descriptor/network policy is hardened together.
   // Extract components from CryptoHDKey
   const chainCode = hdKey.getChainCode();
   const key = hdKey.getKey();

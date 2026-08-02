@@ -12,7 +12,7 @@ import {
 } from "@caravan/bitcoin";
 import { MultisigWalletConfig } from "@caravan/multisig";
 
-import { ColdcardMultisigWalletConfig } from "../coldcard";
+import { ColdcardMultisigWalletConfig, ConfigAdapter } from "..";
 import {
   IndirectKeystoreInteraction,
   PENDING,
@@ -20,27 +20,8 @@ import {
   INFO,
 } from "../interaction";
 
-import { BCUR2Decoder, ExtendedPublicKeyData } from "./decoder";
+import { BCUR2Decoder } from "./decoder";
 import { BCUR2Encoder } from "./encoder";
-import { BCUR2ExtendedPublicKeyDecoder } from "./extendedPublicKeyDecoder";
-
-/** Scan lifecycle shared by BC-UR interactions without tying them to one payload type. */
-export interface BCUR2ScanDecoder {
-  receivePart(text: string): void;
-  reset(): void;
-  isComplete(): boolean;
-  percentComplete(): number;
-  getProgress(): string;
-  getError(): string | null;
-}
-
-/** Decoder contract accepted by the extended-public-key interaction. */
-export interface BCUR2ExtendedPublicKeyScanDecoder extends BCUR2ScanDecoder {
-  readonly network?: BitcoinNetwork;
-  getDecodedData(
-    network?: BitcoinNetwork
-  ): ExtendedPublicKeyData | string | null;
-}
 
 /**
  * Factory function type for creating BCUR2Decoder instances
@@ -65,10 +46,8 @@ export const BCUR2 = "bcur2";
  *
  * @extends IndirectKeystoreInteraction
  */
-export class BCUR2Interaction<
-  Decoder extends BCUR2ScanDecoder = BCUR2Decoder
-> extends IndirectKeystoreInteraction {
-  protected decoder: Decoder;
+export class BCUR2Interaction extends IndirectKeystoreInteraction {
+  protected decoder: BCUR2Decoder;
 
   protected network: BitcoinNetwork;
 
@@ -79,11 +58,11 @@ export class BCUR2Interaction<
    */
   constructor(
     network: BitcoinNetwork = Network.MAINNET,
-    decoder?: Decoder,
+    decoder: BCUR2Decoder = new BCUR2Decoder(),
   ) {
     super();
     this.network = network;
-    this.decoder = decoder || (new BCUR2Decoder() as unknown as Decoder);
+    this.decoder = decoder;
   }
 
   /**
@@ -162,17 +141,17 @@ export class BCUR2Interaction<
  *   console.log(result.xfp);   // The root fingerprint
  * }
  */
-export class BCUR2ExportExtendedPublicKey extends BCUR2Interaction<BCUR2ExtendedPublicKeyScanDecoder> {
+export class BCUR2ExportExtendedPublicKey extends BCUR2Interaction {
   private bip32Path: string;
 
-  private decodedData: ExtendedPublicKeyData | null = null;
+  private decodedData: any = null;
 
   /**
    * Creates a new BCUR2 extended public key import interaction
    * @param {Object} params - The constructor parameters
    * @param {BitcoinNetwork} [params.network=Network.MAINNET] - The Bitcoin network to use
    * @param {string} params.bip32Path - The BIP32 derivation path to request
-   * @param {BCUR2ExtendedPublicKeyScanDecoder} [params.decoder] - Decoder instance to use
+   * @param {BCUR2Decoder} [params.decoder] - The BCUR2Decoder instance to use
    */
   constructor({
     network = Network.MAINNET,
@@ -181,22 +160,11 @@ export class BCUR2ExportExtendedPublicKey extends BCUR2Interaction<BCUR2Extended
   }: {
     network?: BitcoinNetwork;
     bip32Path: string;
-    decoder?: BCUR2ExtendedPublicKeyScanDecoder;
+    decoder?: BCUR2Decoder;
   }) {
-    const decoderNetwork = decoder?.network;
-    if (typeof decoderNetwork === "string" && decoderNetwork !== network) {
-      throw new Error(
-        `BC-UR decoder network ${decoderNetwork} does not match interaction network ${network}.`
-      );
-    }
-    super(network, decoder || new BCUR2ExtendedPublicKeyDecoder({ network }));
+    super(network, decoder);
     this.bip32Path = bip32Path;
     this.workflow = ["request", "parse"];
-  }
-
-  reset() {
-    super.reset();
-    this.decodedData = null;
   }
 
   /**
@@ -250,12 +218,7 @@ export class BCUR2ExportExtendedPublicKey extends BCUR2Interaction<BCUR2Extended
       if (this.decoder.isComplete()) {
         const data = this.decoder.getDecodedData(this.network);
         if (!data) {
-          throw new Error(
-            this.decoder.getError() || "Failed to decode QR code data"
-          );
-        }
-        if (typeof data === "string") {
-          throw new Error("QR code does not contain an extended public key.");
+          throw new Error("Failed to decode QR code data");
         }
         this.decodedData = data;
         return data;
@@ -275,8 +238,7 @@ export class BCUR2ExportExtendedPublicKey extends BCUR2Interaction<BCUR2Extended
    */
   getDecodedData() {
     if (!this.decodedData && this.decoder.isComplete()) {
-      const data = this.decoder.getDecodedData(this.network);
-      this.decodedData = typeof data === "string" ? null : data;
+      this.decodedData = this.decoder.getDecodedData(this.network);
     }
     return this.decodedData;
   }
@@ -632,9 +594,12 @@ export class BCUR2RegisterWalletPolicy extends BCUR2Interaction {
     this.walletConfig = walletConfig;
     this.qrCodeFrames = [];
 
-    const registrationData = new ColdcardMultisigWalletConfig({
-      jsonConfig: walletConfig,
-    }).adapt();
+    const registrationData = (
+      ConfigAdapter({
+        KEYSTORE: BCUR2,
+        jsonConfig: walletConfig,
+      }) as ColdcardMultisigWalletConfig
+    ).adapt();
 
     this.encoder = new BCUR2Encoder(
       registrationData,

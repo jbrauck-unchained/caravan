@@ -1,7 +1,5 @@
 import { networks } from "bitcoinjs-lib-v5";
 
-import type { BitcoinNetwork } from "./types/networks";
-
 /**
  * This module exports network constants and provide some utility
  * functions for displaying the network name and passing the network
@@ -13,35 +11,6 @@ export enum Network {
   TESTNET = "testnet",
   REGTEST = "regtest",
   SIGNET = "signet",
-}
-
-export type Bip32SerializationNetwork = Network.MAINNET | Network.TESTNET;
-
-/**
- * Returns the network family used to select BIP32 Base58 version bytes.
- *
- * Regtest and signet retain their chain identity elsewhere, but serialize
- * extended keys with the same tpub version bytes as testnet.
- */
-export function bip32SerializationNetwork(
-  network: BitcoinNetwork
-): Bip32SerializationNetwork {
-  switch (network) {
-    case Network.MAINNET:
-      return Network.MAINNET;
-    case Network.TESTNET:
-    case Network.REGTEST:
-    case Network.SIGNET:
-      return Network.TESTNET;
-    default: {
-      const unsupportedNetwork: never = network;
-      throw new Error(
-        `Unsupported Bitcoin network for BIP32 serialization: ${String(
-          unsupportedNetwork
-        )}`
-      );
-    }
-  }
 }
 
 /**

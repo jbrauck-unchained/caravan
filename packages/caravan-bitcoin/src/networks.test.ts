@@ -1,31 +1,14 @@
 import { networks } from "bitcoinjs-lib-v5";
 
 import {
-  bip32SerializationNetwork,
   Network,
   networkLabel,
   networkData,
   getNetworkFromPrefix,
 } from "./networks";
 
+
 describe("networks", () => {
-  describe("bip32SerializationNetwork", () => {
-    it.each([
-      [Network.MAINNET, Network.MAINNET],
-      [Network.TESTNET, Network.TESTNET],
-      [Network.REGTEST, Network.TESTNET],
-      [Network.SIGNET, Network.TESTNET],
-    ])("maps %s to the %s serialization family", (network, expected) => {
-      expect(bip32SerializationNetwork(network)).toBe(expected);
-    });
-
-    it("throws for an unsupported runtime value", () => {
-      expect(() => bip32SerializationNetwork("unsupported" as Network)).toThrow(
-        /unsupported bitcoin network.*unsupported/i
-      );
-    });
-  });
-
   describe("networkLabel", () => {
     it("returns a human-readable network name", () => {
       expect(networkLabel(Network.MAINNET)).toBe("Mainnet");

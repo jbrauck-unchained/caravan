@@ -1,5 +1,4 @@
 import {
-  bip32SerializationNetwork,
   ExtendedPublicKey,
   Network,
   bip32SequenceToPath,
@@ -154,8 +153,9 @@ export const ensureXpubAtPath = (
   targetBip32Path: string,
   network: Network,
 ): string => {
-  const prefix =
-    bip32SerializationNetwork(network) === Network.TESTNET ? "tpub" : "xpub";
+  const prefix = [Network.TESTNET, Network.REGTEST].includes(network)
+    ? "tpub"
+    : "xpub";
   const xpub = source.xpub.startsWith(prefix)
     ? source.xpub
     : convertExtendedPublicKey(source.xpub, prefix);
@@ -166,6 +166,6 @@ export const ensureXpubAtPath = (
 
   const relativePath = getRelativeBIP32Path(source.bip32Path, targetBip32Path);
   return !relativePath?.length
-    ? xpub
+    ? source.xpub
     : deriveChildExtendedPublicKey(xpub, relativePath, network);
 };

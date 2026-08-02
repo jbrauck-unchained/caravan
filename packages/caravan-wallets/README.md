@@ -54,41 +54,6 @@ Each interaction takes different arguments. See the [API
 documentation](https://unchained-capital.github.io/@caravan/wallets)
 for full details.
 
-### BC-UR extended public key imports
-
-`BCUR2ExportExtendedPublicKey` uses a purpose-scoped decoder for key-import
-workflows. It accepts standard `crypto-account` and `crypto-hdkey` registry
-items, plus Passport's deployed Sparrow multisig export: strictly validated
-Coldcard-compatible JSON wrapped in `ur:bytes`.
-
-```javascript
-import { Network } from "@caravan/bitcoin";
-import { BCUR2ExtendedPublicKeyDecoder } from "@caravan/wallets";
-
-const decoder = new BCUR2ExtendedPublicKeyDecoder({
-  network: Network.SIGNET,
-});
-
-qrFrames.forEach((frame) => decoder.receivePart(frame));
-
-if (decoder.isComplete()) {
-  const key = decoder.getDecodedData();
-  if (!key) throw new Error(decoder.getError() || "Unable to decode key");
-  console.log(key.xpub, key.rootFingerprint, key.bip32Path);
-}
-```
-
-The generic `BCUR2Decoder` intentionally continues to reject `ur:bytes`, and
-the key decoder rejects PSBTs and unrelated byte payloads. Decoded keys are
-returned at their exported source path; applications must request derivation
-separately. Mainnet keys serialize as `xpub`, while testnet, regtest, and signet
-keys use the test-family `tpub` version without changing the application
-network. For compatibility, the caller's application network is currently
-authoritative; contradictory embedded `useInfo` metadata is not yet enforced.
-The payload limit applies after animated-frame assembly, so consuming scanners
-must also bound per-frame input, frame count, and scan duration. Call `reset()`
-before scanning a new sequence.
-
 ### Applications
 
 The following minimal React example shows how an application developer
