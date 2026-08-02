@@ -796,6 +796,7 @@ export * from "./coldcard";
 export * from "./custom";
 export * from "./hermit";
 export * from "./ledger";
+export * from "./multisigExtendedPublicKeyExport";
 export * from "./trezor";
 export * from "./policy";
 export * from "./types";

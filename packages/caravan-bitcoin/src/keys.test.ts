@@ -53,6 +53,9 @@ describe("keys", () => {
       expect(
         validateExtendedPublicKeyForNetwork(validXpub, Network.REGTEST)
       ).toMatch(/must begin with/i);
+      expect(
+        validateExtendedPublicKeyForNetwork(validXpub, Network.SIGNET)
+      ).toMatch(/must begin with/i);
     });
 
     it("returns an empty string when the value is valid", () => {
@@ -63,8 +66,17 @@ describe("keys", () => {
         validateExtendedPublicKeyForNetwork(validTpub, Network.REGTEST)
       ).toBe("");
       expect(
+        validateExtendedPublicKeyForNetwork(validTpub, Network.SIGNET)
+      ).toBe("");
+      expect(
         validateExtendedPublicKeyForNetwork(validXpub, Network.MAINNET)
       ).toBe("");
+    });
+
+    it("rejects an unsupported runtime network", () => {
+      expect(() =>
+        validateExtendedPublicKeyForNetwork(validTpub, "unsupported")
+      ).toThrow(/unsupported bitcoin network.*unsupported/i);
     });
   });
 
@@ -265,6 +277,15 @@ describe("keys", () => {
       ).toBe(NODES["m/45'/0'/0'/0/0"].pub);
     });
 
+    it.each([Network.REGTEST, Network.SIGNET])(
+      "derives test-family child public keys on %s",
+      (network) => {
+        expect(
+          deriveChildPublicKey(NODES["m/45'/0'/0'"].tpub, "m/0/0", network)
+        ).toBe(NODES["m/45'/0'/0'/0/0"].pub);
+      }
+    );
+
     it("throws an error when asked to derive down a hardened path", () => {
       expect(() => {
         deriveChildPublicKey(
@@ -334,6 +355,19 @@ describe("keys", () => {
         )
       ).toBe(NODES["m/45'/0'/0'/0/0"].tpub);
     });
+
+    it.each([Network.REGTEST, Network.SIGNET])(
+      "derives test-family child extended public keys on %s",
+      (network) => {
+        expect(
+          deriveChildExtendedPublicKey(
+            NODES["m/45'/0'/0'"].tpub,
+            "m/0/0",
+            network
+          )
+        ).toBe(NODES["m/45'/0'/0'/0/0"].tpub);
+      }
+    );
 
     it("throws an error when asked to derive down a hardened path", () => {
       expect(() => {
@@ -528,20 +562,55 @@ describe("keys", () => {
           parentFingerprint,
           Network.MAINNET
         );
-        const derivedTpub = deriveExtendedPublicKey(
-          path,
-          pub,
-          chaincode,
-          parentFingerprint,
-          Network.TESTNET
-        );
         expect(derivedXpub).toEqual(xpub);
-        expect(derivedTpub).toEqual(tpub);
+        for (const network of [
+          Network.TESTNET,
+          Network.REGTEST,
+          Network.SIGNET,
+        ]) {
+          expect(
+            deriveExtendedPublicKey(
+              path,
+              pub,
+              chaincode,
+              parentFingerprint,
+              network
+            )
+          ).toEqual(tpub);
+        }
       }
     });
   });
 
   describe("ExtendedPublicKey", () => {
+    it.each([
+      [Network.MAINNET, "xpub"],
+      [Network.TESTNET, "tpub"],
+      [Network.REGTEST, "tpub"],
+      [Network.SIGNET, "tpub"],
+    ] as const)(
+      "preserves %s chain identity while using %s serialization",
+      (network, expectedPrefix) => {
+        const {
+          parentFingerprint,
+          chaincode,
+          pub: pubkey,
+        } = NODES["m/45'/0'/0'"];
+        const extendedPubkey = new ExtendedPublicKey({
+          path: "m/45'/0'/0'",
+          pubkey,
+          chaincode,
+          parentFingerprint,
+          network,
+        });
+
+        expect(extendedPubkey.network).toEqual(network);
+        expect(extendedPubkey.toBase58()).toMatch(
+          new RegExp(`^${expectedPrefix}`)
+        );
+      }
+    );
+
     it("encodes and decodes an extended public key", () => {
       const paths: [string, string, undefined] = [
         "m/45'/0'/0'",
@@ -583,6 +652,12 @@ describe("keys", () => {
         extendedPubkey.addBase58String();
         expect(extendedPubkey.toBase58()).toEqual(tpub);
         expect(extendedPubkey.base58String).toEqual(tpub);
+        extendedPubkey.setNetwork(Network.REGTEST);
+        expect(extendedPubkey.network).toEqual(Network.REGTEST);
+        expect(extendedPubkey.toBase58()).toEqual(tpub);
+        extendedPubkey.setNetwork(Network.SIGNET);
+        expect(extendedPubkey.network).toEqual(Network.SIGNET);
+        expect(extendedPubkey.toBase58()).toEqual(tpub);
         extendedPubkey.setNetwork(Network.MAINNET);
         extendedPubkey.addBase58String();
         expect(extendedPubkey.toBase58()).toEqual(xpub);

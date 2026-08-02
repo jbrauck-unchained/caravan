@@ -126,6 +126,7 @@ describe("setXpubNetwork", () => {
     expect(setXpubNetwork(xpub, Network.TESTNET)).toBe(tpub);
     expect(setXpubNetwork(tpub, Network.MAINNET)).toBe(xpub);
     expect(setXpubNetwork(xpub, Network.REGTEST)).toBe(tpub);
+    expect(setXpubNetwork(xpub, Network.SIGNET)).toBe(tpub);
   });
 
   it("should not change anything if no network specified", () => {
@@ -223,6 +224,38 @@ describe("ensureXpubAtPath", () => {
     const targetBip32Path = "m/45'/1/0";
     const result = ensureXpubAtPath(source, targetBip32Path, Network.TESTNET);
     expect(result).toMatch(/^tpub/);
+  });
+
+  it.each([
+    [Network.MAINNET, "tpub", "xpub"],
+    [Network.TESTNET, "xpub", "tpub"],
+    [Network.REGTEST, "xpub", "tpub"],
+    [Network.SIGNET, "xpub", "tpub"],
+  ] as const)(
+    "normalizes an existing key to the %s serialization family",
+    (network, sourcePrefix, expectedPrefix) => {
+      const node = TEST_FIXTURES.keys.open_source.nodes["m/45'/0'/0'"];
+      const source = {
+        xpub: sourcePrefix === "xpub" ? node.xpub : node.tpub,
+        bip32Path: "m/45'/0'/0'",
+      };
+
+      expect(ensureXpubAtPath(source, source.bip32Path, network)).toMatch(
+        new RegExp(`^${expectedPrefix}`),
+      );
+    },
+  );
+
+  it("derives a test-family xpub end-to-end on signet", () => {
+    const nodes = TEST_FIXTURES.keys.open_source.nodes;
+    const source = {
+      xpub: nodes["m/45'/0'/0'"].xpub,
+      bip32Path: "m/45'/0'/0'",
+    };
+
+    expect(ensureXpubAtPath(source, "m/45'/0'/0'/0/0", Network.SIGNET)).toBe(
+      nodes["m/45'/0'/0'/0/0"].tpub,
+    );
   });
 
   it("should throw an error if xpub conversion fails", () => {

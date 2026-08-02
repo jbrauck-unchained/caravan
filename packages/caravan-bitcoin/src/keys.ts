@@ -13,7 +13,7 @@ import { ECPair } from "bitcoinjs-lib-v5";
 import bs58check from "bs58check";
 import { Struct, BufferWriter, BufferReader } from "bufio";
 
-import { Network, networkData } from "./networks";
+import { bip32SerializationNetwork, Network, networkData } from "./networks";
 import { P2SH_P2WSH } from "./p2sh_p2wsh";
 import { P2WSH } from "./p2wsh";
 import { bip32PathToSequence, validateBIP32Path } from "./paths";
@@ -150,17 +150,10 @@ export class ExtendedPublicKey extends Struct {
     assert(typeof options.parentFingerprint === "number");
     this.parentFingerprint = options.parentFingerprint;
 
-    if (options.network) {
-      assert(
-        [Network.MAINNET, Network.TESTNET].includes(options.network),
-        `Expected network to be one of ${Network.MAINNET} or ${Network.TESTNET}.`
-      );
-      this.network = options.network;
-    } else {
-      this.network = Network.MAINNET;
-    }
+    this.network = options.network ?? Network.MAINNET;
+    const serializationNetwork = bip32SerializationNetwork(this.network);
     this.version =
-      this.network === Network.MAINNET
+      serializationNetwork === Network.MAINNET
         ? EXTENDED_PUBLIC_KEY_VERSIONS.xpub
         : EXTENDED_PUBLIC_KEY_VERSIONS.tpub;
 
@@ -194,13 +187,10 @@ export class ExtendedPublicKey extends Struct {
    * @returns {void}
    */
   setNetwork(network: BitcoinNetwork): void {
-    assert(
-      [Network.MAINNET, Network.TESTNET, Network.REGTEST].includes(network),
-      `Expected network to be one of ${Network.MAINNET}, ${Network.TESTNET}, or ${Network.REGTEST}.`
-    );
+    const serializationNetwork = bip32SerializationNetwork(network);
     this.network = network;
     this.version =
-      this.network === Network.MAINNET
+      serializationNetwork === Network.MAINNET
         ? EXTENDED_PUBLIC_KEY_VERSIONS.xpub
         : EXTENDED_PUBLIC_KEY_VERSIONS.tpub;
   }
@@ -331,14 +321,16 @@ export function validateExtendedPublicKeyForNetwork(
   network: string
 ): string {
   let requiredPrefix = "'xpub'";
-  const requiresTpub =
-    network === Network.TESTNET || network === Network.REGTEST;
+  const serializationNetwork = bip32SerializationNetwork(
+    network as BitcoinNetwork
+  );
+  const requiresTpub = serializationNetwork === Network.TESTNET;
   if (requiresTpub) {
     requiredPrefix += " or 'tpub'";
   }
   const prefix = extendedPublicKey.slice(0, 4);
   if (
-    (network === Network.MAINNET && prefix !== "xpub") ||
+    (serializationNetwork === Network.MAINNET && prefix !== "xpub") ||
     (requiresTpub && prefix !== "tpub")
   ) {
     return `Extended public key must begin with ${requiredPrefix}.`;
@@ -489,7 +481,10 @@ export function deriveChildPublicKey(
   if (bip32Path.slice(0, 2) === "m/") {
     return deriveChildPublicKey(extendedPublicKey, bip32Path.slice(2), network);
   }
-  const node = bip32.fromBase58(extendedPublicKey, networkData(network));
+  const node = bip32.fromBase58(
+    extendedPublicKey,
+    networkData(bip32SerializationNetwork(network))
+  );
   const child = node.derivePath(bip32Path);
   return toHexString(child.publicKey);
 }
@@ -523,7 +518,10 @@ export function deriveChildExtendedPublicKey(
       network
     );
   }
-  const node = bip32.fromBase58(extendedPublicKey, networkData(network));
+  const node = bip32.fromBase58(
+    extendedPublicKey,
+    networkData(bip32SerializationNetwork(network))
+  );
   const child = node.derivePath(bip32Path);
   return child.toBase58();
 }

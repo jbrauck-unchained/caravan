@@ -1,4 +1,8 @@
-import { ExtendedPublicKey, BitcoinNetwork } from "@caravan/bitcoin";
+import {
+  bip32SerializationNetwork,
+  ExtendedPublicKey,
+  BitcoinNetwork,
+} from "@caravan/bitcoin";
 import { CryptoHDKey, CryptoAccount } from "@keystonehq/bc-ur-registry";
 
 import { ExtendedPublicKeyData } from "./decoder";
@@ -46,6 +50,9 @@ function processHDKey(
   network: BitcoinNetwork,
   type: "crypto-account" | "crypto-hdkey"
 ): ExtendedPublicKeyData {
+  // Compatibility policy: the caller's application network is authoritative.
+  // Embedded useInfo contradictions are intentionally not enforced yet; tests
+  // freeze this behavior until descriptor/network policy is hardened together.
   // Extract components from CryptoHDKey
   const chainCode = hdKey.getChainCode();
   const key = hdKey.getKey();
@@ -79,7 +86,7 @@ function processHDKey(
     chaincode: chainCode.toString("hex"),
     pubkey: key.toString("hex"),
     parentFingerprint: parentFp.readUInt32BE(0),
-    network,
+    network: bip32SerializationNetwork(network),
   });
 
   const xpub = xpubObj.toBase58();

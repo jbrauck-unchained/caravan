@@ -10,6 +10,17 @@ import { URRegistryDecoder, CryptoPSBT } from "@keystonehq/bc-ur-registry";
 import { processCryptoAccountCBOR, processCryptoHDKeyCBOR } from "./utils";
 
 /**
+ * The small portion of a registry decoder needed by Caravan's BC-UR scanners.
+ * Keeping this structural avoids exposing Keystone's decoder type in public APIs.
+ */
+export interface BCUR2RegistryDecoder {
+  receivePart(text: string): unknown;
+  isComplete(): boolean;
+  getProgress(): number;
+  resultUR(): { type: string; cbor: Uint8Array };
+}
+
+/**
  * Factory function type for creating CryptoPSBT instances from CBOR
  */
 export type CryptoPSBTFromCBORFactory = typeof CryptoPSBT.fromCBOR;
@@ -52,7 +63,7 @@ export interface ExtendedPublicKeyData {
  * - crypto-hdkey: Contains hierarchical deterministic keys
  */
 export class BCUR2Decoder {
-  private decoder: URRegistryDecoder;
+  private decoder: BCUR2RegistryDecoder;
 
   private error: string | null = null;
 
@@ -60,13 +71,19 @@ export class BCUR2Decoder {
 
   private cryptoPSBTFromCBORFactory: CryptoPSBTFromCBORFactory;
 
+  private decodeAttempted = false;
+
+  private decodedData: ExtendedPublicKeyData | string | null = null;
+
+  private decodedType: SupportedURType | null = null;
+
   /**
    * Creates a new BCUR2 decoder instance
    * @param decoder - Optional URRegistryDecoder instance. If not provided, creates a new one.
    * @param cryptoPSBTFromCBORFactory - Factory function for creating CryptoPSBT instances from CBOR
    */
   constructor(
-    decoder?: URRegistryDecoder,
+    decoder?: BCUR2RegistryDecoder,
     cryptoPSBTFromCBOR: CryptoPSBTFromCBORFactory = CryptoPSBT.fromCBOR
   ) {
     this.decoder = decoder || new URRegistryDecoder();
@@ -79,12 +96,15 @@ export class BCUR2Decoder {
    * @param cryptoPSBTFromCBORFactory - Optional factory function for creating CryptoPSBT instances from CBOR
    */
   reset(
-    decoder: URRegistryDecoder = new URRegistryDecoder(),
+    decoder: BCUR2RegistryDecoder = new URRegistryDecoder(),
     cryptoPSBTFromCBORFactory?: CryptoPSBTFromCBORFactory
   ) {
     this.decoder = decoder;
     this.error = null;
     this.progress = "Idle";
+    this.decodeAttempted = false;
+    this.decodedData = null;
+    this.decodedType = null;
     if (cryptoPSBTFromCBORFactory) {
       this.cryptoPSBTFromCBORFactory = cryptoPSBTFromCBORFactory;
     }
@@ -138,49 +158,43 @@ export class BCUR2Decoder {
     type: "crypto-account",
     cbor: Buffer,
     network: BitcoinNetwork
-  ): ExtendedPublicKeyData | null;
+  ): ExtendedPublicKeyData;
 
   private handleDecodedResult(
     type: "crypto-hdkey",
     cbor: Buffer,
     network: BitcoinNetwork
-  ): ExtendedPublicKeyData | null;
+  ): ExtendedPublicKeyData;
 
   private handleDecodedResult(
     type: "crypto-psbt",
     cbor: Buffer,
     network: BitcoinNetwork
-  ): string | null;
+  ): string;
 
   private handleDecodedResult(
     type: SupportedURType,
     cbor: Buffer,
     network: BitcoinNetwork
-  ): ExtendedPublicKeyData | string | null;
+  ): ExtendedPublicKeyData | string;
 
   private handleDecodedResult(
     type: SupportedURType,
     cbor: Buffer,
     network: BitcoinNetwork
-  ): ExtendedPublicKeyData | string | null {
-    try {
-      switch (type) {
-        case "crypto-account":
-          return this.handleCryptoAccount(cbor, network);
-        case "crypto-hdkey":
-          return this.handleCryptoHDKey(cbor, network);
-        case "crypto-psbt":
-          return this.handleCryptoPSBT(cbor);
-        default: {
-          // This should never happen due to TypeScript's exhaustiveness checking
-          const exhaustiveCheck: never = type;
-          throw new Error(`Unsupported UR type: ${exhaustiveCheck}`);
-        }
+  ): ExtendedPublicKeyData | string {
+    switch (type) {
+      case "crypto-account":
+        return this.handleCryptoAccount(cbor, network);
+      case "crypto-hdkey":
+        return this.handleCryptoHDKey(cbor, network);
+      case "crypto-psbt":
+        return this.handleCryptoPSBT(cbor);
+      default: {
+        // This should never happen due to TypeScript's exhaustiveness checking
+        const exhaustiveCheck: never = type;
+        throw new Error(`Unsupported UR type: ${exhaustiveCheck}`);
       }
-    } catch (err: any) {
-      console.error("Error decoding UR:", err);
-      this.error = err.message || String(err);
-      return null;
     }
   }
 
@@ -189,6 +203,8 @@ export class BCUR2Decoder {
    * @param {string} text - The text data from the QR code
    */
   receivePart(text: string): void {
+    if (this.decodeAttempted || this.error) return;
+
     try {
       if (text.toUpperCase().startsWith("UR:")) {
         this.decoder.receivePart(text);
@@ -238,29 +254,33 @@ export class BCUR2Decoder {
   /**
    * Gets the decoded wallet data, if available
    * @param {BitcoinNetwork} network - The Bitcoin network to use for decoding
+   * The first completed decode (including its network) is cached until reset.
    * @returns {ExtendedPublicKeyData|string|null} The decoded data or null
    */
   getDecodedData(
-    network: BitcoinNetwork = Network.MAINNET,
+    network: BitcoinNetwork = Network.MAINNET
   ): ExtendedPublicKeyData | string | null {
+    if (this.decodeAttempted) return this.decodedData;
     if (!this.decoder.isComplete()) return null;
 
+    this.decodeAttempted = true;
     try {
       const result = this.decoder.resultUR();
 
       if (!isSupportedURType(result.type)) {
         throw new Error(`Unsupported UR type: ${result.type}`);
       }
+      this.decodedType = result.type;
 
-      const decodedResult = this.handleDecodedResult(
+      this.decodedData = this.handleDecodedResult(
         result.type,
-        Buffer.from(result.cbor.buffer),
-        network,
+        Buffer.from(result.cbor),
+        network
       );
 
-      return decodedResult;
-    } catch (err: any) {
-      this.error = err.message || String(err);
+      return this.decodedData;
+    } catch (err: unknown) {
+      this.error = err instanceof Error ? err.message : String(err);
       return null;
     }
   }
@@ -270,20 +290,18 @@ export class BCUR2Decoder {
    * @returns {string|null} The PSBT in base64 format or null
    */
   getDecodedPSBT(): string | null {
-    try {
-      const decodedResult = this.getDecodedData(
-        Network.MAINNET, // Network doesn't matter for PSBT decoding
-      );
-      if (this.decoder.resultUR().type !== "crypto-psbt") {
-        throw new Error("QR code does not contain PSBT data");
-      }
-      if (typeof decodedResult !== "string") {
-        throw new Error("Expected PSBT string data");
-      }
-      return decodedResult;
-    } catch (err: any) {
-      this.error = err.message || String(err);
+    if (!this.decoder.isComplete()) return null;
+
+    const decodedResult = this.getDecodedData(
+      Network.MAINNET // Network doesn't matter for PSBT decoding
+    );
+    if (
+      decodedResult === null ||
+      this.decodedType !== "crypto-psbt" ||
+      typeof decodedResult !== "string"
+    ) {
       return null;
     }
+    return decodedResult;
   }
 }

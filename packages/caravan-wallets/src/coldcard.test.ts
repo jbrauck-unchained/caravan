@@ -280,6 +280,15 @@ describe("ColdcardExportExtendedPublicKey", () => {
       );
     });
 
+    it.each([Network.REGTEST, Network.SIGNET])(
+      "accepts the %s test-family network",
+      (network) => {
+        expect(
+          interactionBuilder({ network, bip32Path: "m/45'" }).isSupported()
+        ).toBe(true);
+      }
+    );
+
     it("unknown chroot unsupported", () => {
       const interaction = interactionBuilder({
         network: Network.TESTNET,
@@ -348,6 +357,17 @@ describe("ColdcardExportExtendedPublicKey", () => {
       Reflect.deleteProperty(missingXpub, "p2sh");
       expect(() => interaction.parse(missingXpub)).toThrow(
         /Missing required params/i
+      );
+    });
+
+    it("preserves the Coldcard-specific missing-parameter guidance", () => {
+      const interaction = interactionBuilder({
+        network: Network.TESTNET,
+        bip32Path: "m/45'",
+      });
+
+      expect(() => interaction.parse({ p2sh_deriv: "m/45'" })).toThrow(
+        "Missing required params. Was this file exported from a Coldcard?  If you are using firmware version 4.1.0 please upgrade to 4.1.1 or later."
       );
     });
     it("missing bip32path", () => {
@@ -440,6 +460,22 @@ describe("ColdcardExportExtendedPublicKey", () => {
       expect(result.rootFingerprint).toEqual(ROOT_FINGERPRINT);
       expect(result.xpub).toEqual(nodes[bip32Path].tpub);
     });
+
+    it.each([Network.REGTEST, Network.SIGNET])(
+      "returns a tpub on %s",
+      (network) => {
+        const bip32Path = "m/45'";
+        const result = interactionBuilder({ network, bip32Path }).parse(
+          coldcardFixtures.validColdcardXpubJSON
+        );
+
+        expect(result).toEqual({
+          xpub: nodes[bip32Path].tpub,
+          rootFingerprint: ROOT_FINGERPRINT,
+          bip32Path,
+        });
+      }
+    );
   });
 
   it("has a message about uploading file", () => {

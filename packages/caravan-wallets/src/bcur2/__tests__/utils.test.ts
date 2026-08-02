@@ -97,9 +97,11 @@ vi.mock("@caravan/bitcoin", () => {
       TESTNET: "testnet",
       MAINNET: "mainnet",
     },
+    bip32SerializationNetwork: vi.fn((network) => network),
     ExtendedPublicKey: vi.fn().mockImplementation(({ network }) => ({
-      toBase58: () =>
-        (network === "testnet" ? "tpubMockedKey" : "xpubMockedKey"),
+      toBase58: () => {
+        return network === "testnet" ? "tpubMockedKey" : "xpubMockedKey";
+      },
     })),
   };
 });

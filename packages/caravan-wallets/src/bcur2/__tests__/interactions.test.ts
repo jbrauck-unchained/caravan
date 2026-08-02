@@ -1,8 +1,10 @@
 import { Network } from "@caravan/bitcoin";
+import { Bytes } from "@keystonehq/bc-ur-registry";
 import { mockDeep, MockProxy } from "vitest-mock-extended";
 
 import { ExtendedPublicKeyData, BCUR2Decoder } from "../decoder";
 import { BCUR2Encoder } from "../encoder";
+import { BCUR2ExtendedPublicKeyDecoder } from "../extendedPublicKeyDecoder";
 import {
   BCUR2Interaction,
   BCUR2ExportExtendedPublicKey,
@@ -199,6 +201,70 @@ describe("BCUR2 Interactions", () => {
       );
     });
 
+    it("should preserve a detailed semantic decoder error", () => {
+      mockDecoder.isComplete.mockReturnValue(true);
+      mockDecoder.getDecodedData.mockReturnValue(null);
+      mockDecoder.getError.mockReturnValue(
+        "Computed fingerprint does not match the one in the file."
+      );
+      const interaction = new BCUR2ExportExtendedPublicKey({
+        bip32Path: "m/45'",
+        decoder: mockDecoder,
+      });
+
+      expect(() => interaction.parse("UR:BYTES/bad-data")).toThrow(
+        "Error parsing BCUR2 data: Computed fingerprint does not match the one in the file."
+      );
+    });
+
+    it("uses the specialized decoder by default and returns the source key", () => {
+      const passportExport = {
+        p2sh_deriv: "m/45'",
+        p2sh: "tpubDA2HtQKGFGx9BPZQ3yemoxaH6tjBkKbwTc4mMqpvkvu2RSkmKgADtCVaCpV4iDhXnqb46iQ7PjMMVzU6MERq7tNoLJ8rEvaYSStJssFKfvb",
+        p2sh_p2wsh_deriv: "m/48'/1'/0'/1'",
+        p2sh_p2wsh:
+          "Upub5SRh9Zozi9attVLrU2hezfntv3kUNwbeRa3zJr6aV1pnmEUtfgZnLszfFKJyULFMbEcogARAsKosJBgaN8AmotgvbVgJ78srDmj59wzuTP7",
+        p2wsh_deriv: "m/48'/1'/0'/2'",
+        p2wsh:
+          "Vpub5mFxTEUurq8NoPJfC1T9dCYvSYrorqSRnWgCjbEBwZ2coBhBej9f3TK6tbz5m27sVn4TAY2KsbmN1k2oi2J2NcWJabKGSHdgXxJaJ4V8YMb",
+        xfp: "EFA5D916",
+      };
+      const interaction = new BCUR2ExportExtendedPublicKey({
+        network: Network.TESTNET,
+        bip32Path: "m/45'/1/0",
+      });
+      let result: ExtendedPublicKeyData | null = null;
+
+      new Bytes(Buffer.from(JSON.stringify(passportExport)))
+        .toUREncoder(100)
+        .encodeWhole()
+        .forEach((fragment) => {
+          result = interaction.parse(fragment);
+        });
+
+      expect(result).toEqual({
+        type: "bytes",
+        xpub: passportExport.p2sh,
+        rootFingerprint: "efa5d916",
+        bip32Path: "45'",
+      });
+    });
+
+    it("rejects an injected decoder configured for another network", () => {
+      expect(
+        () =>
+          new BCUR2ExportExtendedPublicKey({
+            network: Network.TESTNET,
+            bip32Path: "m/45'",
+            decoder: new BCUR2ExtendedPublicKeyDecoder({
+              network: Network.MAINNET,
+            }),
+          })
+      ).toThrow(
+        "BC-UR decoder network mainnet does not match interaction network testnet."
+      );
+    });
+
     it("should get decoded data after completion", () => {
       mockDecoder.isComplete.mockReturnValue(true);
       mockDecoder.getDecodedData.mockReturnValue(mockExtendedKeyData);
@@ -211,6 +277,21 @@ describe("BCUR2 Interactions", () => {
       const result = interaction.getDecodedData();
 
       expect(result).toEqual(mockExtendedKeyData);
+    });
+
+    it("clears cached interaction data on reset", () => {
+      mockDecoder.isComplete.mockReturnValue(true);
+      mockDecoder.getDecodedData.mockReturnValue(mockExtendedKeyData);
+      const interaction = new BCUR2ExportExtendedPublicKey({
+        bip32Path: "m/48'/0'/0'/2'",
+        decoder: mockDecoder,
+      });
+
+      expect(interaction.getDecodedData()).toEqual(mockExtendedKeyData);
+      interaction.reset();
+      mockDecoder.isComplete.mockReturnValue(false);
+
+      expect(interaction.getDecodedData()).toBeNull();
     });
   });
 

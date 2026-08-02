@@ -83,9 +83,11 @@ vi.mock("@caravan/bitcoin", () => {
       TESTNET: "testnet",
       MAINNET: "mainnet",
     },
+    bip32SerializationNetwork: vi.fn((network) => network),
     ExtendedPublicKey: vi.fn().mockImplementation(({ network }) => ({
-      toBase58: () =>
-        (network === "testnet" ? "tpubMockedKey" : "xpubMockedKey"),
+      toBase58: () => {
+        return network === "testnet" ? "tpubMockedKey" : "xpubMockedKey";
+      },
     })),
   };
 });
@@ -199,7 +201,49 @@ describe("BCUR2Decoder", () => {
       mockDecoder.resultUR.mockReturnValue(mockUR);
 
       decoder.getDecodedData(Network.TESTNET);
+      decoder.getDecodedData(Network.TESTNET);
       expect(decoder.getError()).toBe("Unsupported UR type: unsupported-type");
+      expect(mockDecoder.resultUR).toHaveBeenCalledTimes(1);
+    });
+
+    it("copies only the completed CBOR view and caches the decoded result", () => {
+      const backing = Buffer.from([0xff, 1, 2, 3, 4, 0xee]);
+      const cborView = backing.subarray(1, 5);
+      const mockUR = {
+        type: "crypto-psbt",
+        cbor: cborView,
+      } as unknown as UR;
+      const mockPSBT = mockDeep<CryptoPSBT>();
+      mockPSBT.getPSBT.mockReturnValue(Buffer.from("decoded-psbt"));
+      const fromCBOR = vi.fn(() => mockPSBT);
+      mockDecoder.isComplete.mockReturnValue(true);
+      mockDecoder.resultUR.mockReturnValue(mockUR);
+      decoder = new BCUR2Decoder(mockDecoder, fromCBOR);
+
+      const firstResult = decoder.getDecodedPSBT();
+      const secondResult = decoder.getDecodedPSBT();
+
+      expect(firstResult).toBe(Buffer.from("decoded-psbt").toString("base64"));
+      expect(secondResult).toBe(firstResult);
+      expect(fromCBOR).toHaveBeenCalledTimes(1);
+      expect(fromCBOR.mock.calls[0][0]).toEqual(Buffer.from([1, 2, 3, 4]));
+      expect(mockDecoder.resultUR).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a terminal key success when the PSBT accessor is called", () => {
+      mockDecoder.isComplete.mockReturnValue(true);
+      mockDecoder.resultUR.mockReturnValue({
+        type: "crypto-account",
+        cbor: Buffer.from([1, 2, 3, 4]),
+      } as unknown as UR);
+
+      const keyData = decoder.getDecodedData(Network.TESTNET);
+
+      expect(keyData).toMatchObject({ type: "crypto-account" });
+      expect(decoder.getDecodedPSBT()).toBeNull();
+      expect(decoder.getError()).toBeNull();
+      expect(decoder.getDecodedData(Network.MAINNET)).toBe(keyData);
+      expect(mockDecoder.resultUR).toHaveBeenCalledTimes(1);
     });
 
     it("should handle decoder errors", () => {

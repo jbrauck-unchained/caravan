@@ -8,19 +8,14 @@
  * * ColdcardSignMultisigTransaction
  * * ColdcardMultisigWalletConfig
  */
-import { ensureXpubAtPath } from "@caravan/bip32";
 import {
-  fingerprintToFixedLengthHex,
+  bip32SerializationNetwork,
   parseSignaturesFromPSBT,
   ExtendedPublicKey,
-  Network,
   validateBIP32Path,
   getRelativeBIP32Path,
   getMaskedDerivation,
   MultisigAddressType,
-  P2SH,
-  P2SH_P2WSH,
-  P2WSH,
   BitcoinNetwork,
 } from "@caravan/bitcoin";
 import {
@@ -36,18 +31,21 @@ import {
   INFO,
   ERROR,
 } from "./interaction";
+import {
+  InvalidMultisigExtendedPublicKeyExportError,
+  MissingMultisigExtendedPublicKeyExportParametersError,
+  MULTISIG_EXTENDED_PUBLIC_KEY_EXPORT_BASE_BIP32_PATHS,
+  MULTISIG_EXTENDED_PUBLIC_KEY_EXPORT_BASE_CHROOTS,
+  multisigExtendedPublicKeyExportChroot,
+  parseMultisigExtendedPublicKeyExport,
+  UnsupportedMultisigExtendedPublicKeyExportPathError,
+} from "./multisigExtendedPublicKeyExport";
 import { WalletConfigKeyDerivation } from "./types";
 
 export const COLDCARD = "coldcard";
-// Our constants use 'P2SH-P2WSH', their file uses 'P2SH_P2WSH' :\
-export const COLDCARD_BASE_BIP32_PATHS = {
-  "m/45'": P2SH,
-  "m/48'/0'/0'/1'": P2SH_P2WSH.replace("-", "_"),
-  "m/48'/0'/0'/2'": P2WSH,
-  "m/48'/1'/0'/1'": P2SH_P2WSH.replace("-", "_"),
-  "m/48'/1'/0'/2'": P2WSH,
-};
-const COLDCARD_BASE_CHROOTS = Object.keys(COLDCARD_BASE_BIP32_PATHS);
+export const COLDCARD_BASE_BIP32_PATHS =
+  MULTISIG_EXTENDED_PUBLIC_KEY_EXPORT_BASE_BIP32_PATHS;
+const COLDCARD_BASE_CHROOTS = MULTISIG_EXTENDED_PUBLIC_KEY_EXPORT_BASE_CHROOTS;
 
 export const COLDCARD_WALLET_CONFIG_VERSION = "1.0.0";
 
@@ -77,13 +75,10 @@ class ColdcardMultisigSettingsFileParser extends ColdcardInteraction {
     bip32Path: string;
   }) {
     super();
-    if (
-      [Network.MAINNET, Network.TESTNET, Network.REGTEST].find(
-        (net) => net === network
-      )
-    ) {
+    try {
+      bip32SerializationNetwork(network);
       this.network = network;
-    } else {
+    } catch (_error) {
       throw new Error("Unknown network.");
     }
     this.bip32Path = bip32Path;
@@ -131,13 +126,7 @@ class ColdcardMultisigSettingsFileParser extends ColdcardInteraction {
   }
 
   chrootForBIP32Path(bip32Path) {
-    for (let i = 0; i < COLDCARD_BASE_CHROOTS.length; i++) {
-      const chroot = COLDCARD_BASE_CHROOTS[i];
-      if (bip32Path.startsWith(chroot)) {
-        return chroot;
-      }
-    }
-    return null;
+    return multisigExtendedPublicKeyExportChroot(bip32Path);
   }
 
   /**
@@ -183,131 +172,33 @@ class ColdcardMultisigSettingsFileParser extends ColdcardInteraction {
     return unknownColdcardParentBip32PathError;
   }
 
-  /**
-   * Parse the Coldcard JSON file and do some basic error checking
-   * add a field for rootFingerprint (it can sometimes be calculated
-   * if not explicitly included)
-   *
-   */
-  parse(file: Record<string, unknown> | string) {
-    //In the case of keys (json), the file will look like:
-    //
-    //{
-    //   "p2sh_deriv": "m/45'",
-    //   "p2sh": "tpubDA4nUAdTmY...MmtZaVFEU5MtMfj7H",
-    //   "p2wsh_p2sh_deriv": "m/48'/1'/0'/1'",          // originally they had this backwards
-    //   "p2wsh_p2sh": "Upub5THcs...Qh27gWiL2wDoVwaW",  // originally they had this backwards
-    //   "p2sh_p2wsh_deriv": "m/48'/1'/0'/1'",          // now it's right
-    //   "p2sh_p2wsh": "Upub5THcs...Qh27gWiL2wDoVwaW",  // now it's right
-    //   "p2wsh_deriv": "m/48'/1'/0'/2'",
-    //   "p2wsh": "Vpub5n7tBWyvv...2hTzyeSKtZ5PQ1MRN",
-    //   "xfp": "12abcdef"
-    // }
-    //
-    // For now, we will derive unhardened from `p2sh_deriv`
-    // FIXME: assume we will gain the ability to ask Coldcard for an arbitrary path
-    //   (or at least a p2sh hardened path deeper than m/45')
-
-    let data;
-    if (typeof file === "object") {
-      data = file;
-    } else if (typeof file === "string") {
-      try {
-        data = JSON.parse(file);
-      } catch (error) {
-        throw new Error("Unable to parse JSON.");
+  /** Parse a Coldcard JSON extended-public-key export. */
+  parseExtendedPublicKeyExport(file: Record<string, unknown> | string) {
+    try {
+      return parseMultisigExtendedPublicKeyExport(file, {
+        network: this.network,
+        bip32Path: this.bip32Path,
+      });
+    } catch (error) {
+      if (error instanceof InvalidMultisigExtendedPublicKeyExportError) {
+        throw new Error("Not valid JSON.");
       }
-    } else {
-      throw new Error("Not valid JSON.");
+      if (
+        error instanceof MissingMultisigExtendedPublicKeyExportParametersError
+      ) {
+        throw new Error(
+          "Missing required params. Was this file exported from a Coldcard?  If you are using firmware version 4.1.0 please upgrade to 4.1.1 or later."
+        );
+      }
+      if (
+        error instanceof UnsupportedMultisigExtendedPublicKeyExportPathError
+      ) {
+        throw new Error(
+          `Unable to determine Coldcard script type from ${this.bip32Path}`
+        );
+      }
+      throw error;
     }
-
-    if (Object.keys(data).length === 0) {
-      throw new Error("Empty JSON file.");
-    }
-
-    // Coldcard changed the format of keys in the exported file to match
-    // the convention of p2sh-p2wsh instead of what they had before
-    // which was p2wsh-p2sh ... so one of these sets needs to be
-    // in the file.
-    if (
-      !data.p2sh_deriv ||
-      !data.p2sh ||
-      !data.p2wsh_deriv ||
-      !data.p2wsh ||
-      ((!data.p2wsh_p2sh_deriv || !data.p2wsh_p2sh) &&
-        (!data.p2sh_p2wsh_deriv || !data.p2sh_p2wsh))
-    ) {
-      throw new Error(
-        "Missing required params. Was this file exported from a Coldcard?  If you are using firmware version 4.1.0 please upgrade to 4.1.1 or later."
-      );
-    }
-
-    const xpubClass = ExtendedPublicKey.fromBase58(data.p2sh);
-    if (!data.xfp && xpubClass.depth !== 1) {
-      throw new Error("No xfp in JSON file.");
-    }
-
-    // We can only find the fingerprint in the xpub if the depth is one
-    // because the xpub includes its parent's fingerprint.
-    let xfpFromWithinXpub =
-      xpubClass.depth === 1
-        ? xpubClass.parentFingerprint &&
-          fingerprintToFixedLengthHex(xpubClass.parentFingerprint)
-        : null;
-
-    // Sanity check if you send in a depth one xpub, we should get the same fingerprint
-    if (
-      xfpFromWithinXpub &&
-      data.xfp &&
-      xfpFromWithinXpub !== data.xfp.toLowerCase()
-    ) {
-      throw new Error(
-        "Computed fingerprint does not match the one in the file."
-      );
-    }
-
-    const rootFingerprint = data.xfp ? data.xfp : xfpFromWithinXpub;
-    data.rootFingerprint = rootFingerprint.toLowerCase();
-
-    return data;
-  }
-
-  /**
-   * This method will take the result from the Coldcard JSON and:
-   *
-   * 1. determine which t/U/V/x/Y/Zpub to use
-   * 2. derive deeper if necessary (and able) using functionality
-   *    from @caravan/bitcoin
-   *
-   */
-  deriveDeeperXpubIfNecessary(result: Record<string, unknown> | string) {
-    const knownColdcardChroot = this.chrootForBIP32Path(this.bip32Path);
-    let addressType = "";
-    if (knownColdcardChroot !== null) {
-      addressType = COLDCARD_BASE_BIP32_PATHS[knownColdcardChroot];
-    }
-    if (!knownColdcardChroot) {
-      throw new Error(
-        `Unable to determine Coldcard script type from ${this.bip32Path}`,
-      );
-    }
-
-    // result could have p2wsh_p2sh or p2sh_p2wsh based on firmware version. Blah!
-    if (addressType.includes("_") && !result[addressType.toLowerCase()]) {
-      // Firmware < v3.2.0
-      addressType = "p2wsh_p2sh";
-    }
-
-    // NOTE: If the addressType is segwit, the imported key will not be in the xpub/tpub formats
-    // this will convert it.
-    return ensureXpubAtPath(
-      {
-        xpub: result[addressType.toLowerCase()],
-        bip32Path: knownColdcardChroot,
-      },
-      this.bip32Path,
-      this.network,
-    );
   }
 }
 
@@ -340,11 +231,10 @@ export class ColdcardExportPublicKey extends ColdcardMultisigSettingsFileParser 
   }
 
   parse(xpubJSONFile) {
-    const result = super.parse(xpubJSONFile);
-    const xpub = this.deriveDeeperXpubIfNecessary(result);
+    const result = this.parseExtendedPublicKeyExport(xpubJSONFile);
 
     return {
-      publicKey: ExtendedPublicKey.fromBase58(xpub).pubkey,
+      publicKey: ExtendedPublicKey.fromBase58(result.xpub).pubkey,
       rootFingerprint: result.rootFingerprint,
       bip32Path: this.bip32Path,
     };
@@ -380,11 +270,10 @@ export class ColdcardExportExtendedPublicKey extends ColdcardMultisigSettingsFil
   }
 
   parse(xpubJSONFile) {
-    const result = super.parse(xpubJSONFile);
-    const xpub = this.deriveDeeperXpubIfNecessary(result);
+    const result = this.parseExtendedPublicKeyExport(xpubJSONFile);
 
     return {
-      xpub,
+      xpub: result.xpub,
       rootFingerprint: result.rootFingerprint,
       bip32Path: this.bip32Path,
     };
