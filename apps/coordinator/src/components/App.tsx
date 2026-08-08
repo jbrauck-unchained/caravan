@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { Suspense, useState } from "react";
 import {
   HashRouter as Router,
   Route,
@@ -32,6 +32,13 @@ import Footer from "./Footer";
 import ErrorBoundary from "./ErrorBoundary";
 import ErrorNotification from "./ErrorNotification";
 import { useMediaQuery, useTheme } from "@mui/material";
+import { LEDGER_BITCOIN_POC_ENABLED } from "../config/ledgerBitcoinPoc";
+
+const LedgerBitcoinInstallerPocPage = LEDGER_BITCOIN_POC_ENABLED
+  ? React.lazy(
+      () => import("./LedgerBitcoinInstaller/LedgerBitcoinInstallerPocPage"),
+    )
+  : null;
 
 const App = () => {
   return (
@@ -156,6 +163,19 @@ const AppContent = () => {
               <Redirect from="/spend" to="/script" />
               <Route path="/script" component={ScriptExplorer} />
               <Route path="/hermit-psbt" component={HermitPsbtInterface} />
+              {LedgerBitcoinInstallerPocPage ? (
+                <Route path="/ledger-bitcoin">
+                  <Suspense
+                    fallback={
+                      <Box sx={{ p: 4, textAlign: "center" }}>
+                        Loading Ledger installer proof of concept…
+                      </Box>
+                    }
+                  >
+                    <LedgerBitcoinInstallerPocPage />
+                  </Suspense>
+                </Route>
+              ) : null}
               <Route path="/wallet" component={Wallet} />
               <Route path="/help" component={Help} />
               <Route path="/setup" component={Setup} />

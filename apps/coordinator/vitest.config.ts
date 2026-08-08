@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
 export default defineConfig({
+  define: {
+    __CARAVAN_LEDGER_POC__: false,
+  },
   test: {
     globals: true,
     environment: 'jsdom',
