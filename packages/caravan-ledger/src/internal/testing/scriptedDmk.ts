@@ -1,5 +1,6 @@
 import type { Clock, ClockTimer } from "../clock";
 import type {
+  DmkActionOperation,
   DmkActionKind,
   DmkActionRequest,
   DmkActionState,
@@ -35,6 +36,16 @@ export type ScriptedStreamStep<T> =
   | { readonly type: "throw-on-subscribe"; readonly error: unknown }
   | { readonly type: "never" };
 
+export interface ScriptedInstallMutationStep {
+  readonly type: "attempt-install-mutation";
+  readonly atMs?: number;
+  readonly afterCancel?: boolean;
+}
+
+export type ScriptedActionStep<K extends DmkActionKind> =
+  | ScriptedStreamStep<DmkActionState<K>>
+  | (K extends "install-bitcoin" ? ScriptedInstallMutationStep : never);
+
 export type ScriptedPromise<T> =
   | { readonly type: "resolve"; readonly value: T; readonly afterMs?: number }
   | {
@@ -62,6 +73,7 @@ export interface ScriptedDmkCall {
     | "next"
     | "stream-error"
     | "complete"
+    | "attempt-install-mutation"
     | "cancel"
     | "unsubscribe";
   readonly operationId?: number;
@@ -88,7 +100,10 @@ export interface ScriptedDmkResources {
 
 interface QueuedAction {
   readonly kind: DmkActionKind;
-  readonly steps: readonly ScriptedStreamStep<DmkActionState>[];
+  readonly steps: readonly (
+    | ScriptedStreamStep<DmkActionState>
+    | ScriptedInstallMutationStep
+  )[];
 }
 
 interface OperationResource {
@@ -96,6 +111,9 @@ interface OperationResource {
   closed: boolean;
   cancelled: boolean;
   terminal: boolean;
+  installMutationBoundary: boolean;
+  installDispatchStarted: boolean;
+  mutationAttempted: boolean;
   readonly timers: Map<ClockTimer, boolean>;
 }
 
@@ -149,11 +167,14 @@ export class ScriptedDmk implements DmkPort {
 
   queueAction<K extends DmkActionKind>(
     kind: K,
-    steps: readonly ScriptedStreamStep<DmkActionState<K>>[],
+    steps: readonly ScriptedActionStep<K>[],
   ): this {
     this.actionScripts.push({
       kind,
-      steps: steps as readonly ScriptedStreamStep<DmkActionState>[],
+      steps: steps as readonly (
+        | ScriptedStreamStep<DmkActionState>
+        | ScriptedInstallMutationStep
+      )[],
     });
     return this;
   }
@@ -211,7 +232,7 @@ export class ScriptedDmk implements DmkPort {
   runAction<K extends DmkActionKind>(
     session: DmkSession,
     action: Extract<DmkActionRequest, { readonly kind: K }>,
-  ): DmkOperation<DmkActionState<K>> {
+  ): DmkActionOperation<K> {
     const queued = this.actionScripts[0];
     if (!queued) {
       throw new Error("No action script is queued.");
@@ -225,7 +246,7 @@ export class ScriptedDmk implements DmkPort {
     return this.createOperation("action", queued.steps, {
       session,
       action,
-    }) as DmkOperation<DmkActionState<K>>;
+    }, action.kind === "install-bitcoin") as DmkActionOperation<K>;
   }
 
   disconnect(session: DmkSession): Promise<void> {
@@ -270,8 +291,9 @@ export class ScriptedDmk implements DmkPort {
 
   private createOperation<T>(
     source: ScriptedDmkStreamSource,
-    steps: readonly ScriptedStreamStep<T>[],
+    steps: readonly (ScriptedStreamStep<T> | ScriptedInstallMutationStep)[],
     details: Pick<ScriptedDmkCall, "session" | "action"> = {},
+    installMutationBoundary = false,
   ): DmkOperation<T> {
     const operationId = ++this.operationId;
     const resource: OperationResource = {
@@ -279,6 +301,9 @@ export class ScriptedDmk implements DmkPort {
       closed: false,
       cancelled: false,
       terminal: false,
+      installMutationBoundary,
+      installDispatchStarted: installMutationBoundary,
+      mutationAttempted: false,
       timers: new Map(),
     };
     this.operationResources.set(operationId, resource);
@@ -300,7 +325,7 @@ export class ScriptedDmk implements DmkPort {
         this.subscribe(operationId, source, resource, steps, observer),
     };
 
-    return {
+    const operation: DmkOperation<T> = {
       stream,
       cancel: () => {
         if (resource.cancelled) {
@@ -311,13 +336,22 @@ export class ScriptedDmk implements DmkPort {
         this.clearNormalTimers(resource);
       },
     };
+
+    if (installMutationBoundary) {
+      return {
+        ...operation,
+        dispatchStarted: () => resource.installDispatchStarted,
+        mutationAttempted: () => resource.mutationAttempted,
+      } as DmkOperation<T>;
+    }
+    return operation;
   }
 
   private subscribe<T>(
     operationId: number,
     source: ScriptedDmkStreamSource,
     resource: OperationResource,
-    steps: readonly ScriptedStreamStep<T>[],
+    steps: readonly (ScriptedStreamStep<T> | ScriptedInstallMutationStep)[],
     observer: DmkObserver<T>,
   ): DmkSubscription {
     if (resource.subscribed) {
@@ -384,10 +418,12 @@ export class ScriptedDmk implements DmkPort {
     source: ScriptedDmkStreamSource,
     resource: OperationResource,
     observer: DmkObserver<T>,
-    step: Exclude<
-      ScriptedStreamStep<T>,
-      { readonly type: "throw-on-subscribe" } | { readonly type: "never" }
-    >,
+    step:
+      | Exclude<
+          ScriptedStreamStep<T>,
+          { readonly type: "throw-on-subscribe" } | { readonly type: "never" }
+        >
+      | ScriptedInstallMutationStep,
   ): void {
     const adversarialLateDelivery = step.afterCancel === true;
     if (
@@ -398,6 +434,15 @@ export class ScriptedDmk implements DmkPort {
     }
 
     switch (step.type) {
+      case "attempt-install-mutation":
+        if (!resource.installMutationBoundary) return;
+        resource.mutationAttempted = true;
+        this.record({
+          type: "attempt-install-mutation",
+          operationId,
+          source,
+        });
+        return;
       case "next":
         this.record({
           type: "next",

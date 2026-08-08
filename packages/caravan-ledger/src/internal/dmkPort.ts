@@ -30,6 +30,9 @@ export type DmkActionState<K extends DmkActionKind = DmkActionKind> =
       readonly status: "completed";
       readonly output: DmkActionOutputByKind[K];
     }
+  | (K extends "install-bitcoin"
+      ? { readonly status: "verification-required" }
+      : never)
   | { readonly status: "error"; readonly rawError: unknown }
   | { readonly status: "stopped" };
 
@@ -68,6 +71,24 @@ export interface DmkOperation<T> {
 }
 
 /**
+ * Install-only evidence captured at the last package-owned boundary before
+ * the pinned SDK delegates to its secure-channel installation dependency.
+ */
+export interface DmkInstallOperation<T> extends DmkOperation<T> {
+  /**
+   * Synchronous package evidence that the pinned runtime install action was
+   * dispatched. This is deliberately distinct from the later mutation marker.
+   */
+  dispatchStarted(): boolean;
+  mutationAttempted(): boolean;
+}
+
+export type DmkActionOperation<K extends DmkActionKind> =
+  K extends "install-bitcoin"
+    ? DmkInstallOperation<DmkActionState<K>>
+    : DmkOperation<DmkActionState<K>>;
+
+/**
  * Package-owned reduction of the Ledger runtime boundary.
  *
  * The only action authority is the closed Bitcoin-specific union above.
@@ -85,7 +106,7 @@ export interface DmkPort {
   runAction<K extends DmkActionKind>(
     session: DmkSession,
     action: Extract<DmkActionRequest, { readonly kind: K }>,
-  ): DmkOperation<DmkActionState<K>>;
+  ): DmkActionOperation<K>;
   disconnect(session: DmkSession): Promise<void>;
   close(): Promise<void>;
 }

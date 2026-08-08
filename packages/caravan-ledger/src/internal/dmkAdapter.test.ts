@@ -1,17 +1,24 @@
 import {
   DeviceActionStatus,
   GenuineCheckDeviceAction,
+  InstallAppDeviceAction,
   ListInstalledAppsDeviceAction,
+  OpenAppDeviceAction,
   UserInteractionRequired,
 } from "@ledgerhq/device-management-kit";
+import { firstValueFrom, NEVER } from "rxjs";
 
+import { runDmkAction } from "./actionRunner";
 import { DmkAdapter } from "./dmkAdapter";
 import type {
   DmkActionKind,
   DmkActionRequest,
   DmkActionState,
   DmkObserver,
+  DmkOperation,
 } from "./dmkPort";
+import { BitcoinOnlyInstallAppDeviceAction } from "./installAppDeviceAction";
+import { BitcoinOnlyOpenAppDeviceAction } from "./openAppDeviceAction";
 
 function nativeStream<T>() {
   let observer: DmkObserver<T> | undefined;
@@ -60,7 +67,10 @@ function makeRuntime() {
   };
 }
 
-type ReadOnlyActionKind = Extract<DmkActionKind, "genuine" | "list-bitcoin">;
+type ImplementedActionKind = Extract<
+  DmkActionKind,
+  "genuine" | "list-bitcoin" | "install-bitcoin" | "open-bitcoin"
+>;
 
 async function makeConnectedAdapter() {
   const discovery = nativeStream<typeof nativeDevice>();
@@ -85,7 +95,7 @@ async function makeConnectedAdapter() {
   return { adapter, runtime, session };
 }
 
-async function makeActionHarness<K extends ReadOnlyActionKind>(kind: K) {
+async function makeActionHarness<K extends ImplementedActionKind>(kind: K) {
   const { adapter, runtime, session } = await makeConnectedAdapter();
   const source = nativeStream<unknown>();
   const nativeCancel = vi.fn();
@@ -103,7 +113,9 @@ async function makeActionHarness<K extends ReadOnlyActionKind>(kind: K) {
     error: vi.fn(),
     complete: vi.fn(),
   };
-  const subscription = operation.stream.subscribe(observer);
+  const subscription = (
+    operation as DmkOperation<DmkActionState<K>>
+  ).stream.subscribe(observer);
   return {
     adapter,
     runtime,
@@ -325,22 +337,6 @@ describe("DMK adapter", () => {
     expect(runtime.disconnect).toHaveBeenCalledOnce();
   });
 
-  it.each(["install-bitcoin", "open-bitcoin"] as const)(
-    "keeps %s unavailable without constructing a native action",
-    (kind) => {
-      const runtime = makeRuntime();
-      const adapter = new DmkAdapter(runtime as never);
-
-      expect(() =>
-        adapter.runAction(
-          { internalSessionId: "opaque", modelId: "nanoS" },
-          { kind },
-        ),
-      ).toThrow("not available yet");
-      expect(runtime.executeDeviceAction).not.toHaveBeenCalled();
-    },
-  );
-
   it("rejects an unrecognized runtime action without widening native authority", async () => {
     const { adapter, runtime, session } = await makeConnectedAdapter();
 
@@ -410,6 +406,413 @@ describe("DMK adapter", () => {
     expect(
       Reflect.get(executeInput.deviceAction, "loggerFactory"),
     ).toBeUndefined();
+  });
+
+  it("constructs only the fixed Bitcoin open subclass with no generic authority", async () => {
+    const { runtime, nativeCancel } = await makeActionHarness("open-bitcoin");
+    const executeInput = runtime.executeDeviceAction.mock.calls[0]?.[0] as {
+      readonly sessionId: string;
+      readonly deviceAction: BitcoinOnlyOpenAppDeviceAction;
+    };
+
+    expect(executeInput.sessionId).toBe("native-session-secret");
+    expect(executeInput.deviceAction).toBeInstanceOf(OpenAppDeviceAction);
+    expect(executeInput.deviceAction).toBeInstanceOf(
+      BitcoinOnlyOpenAppDeviceAction,
+    );
+    expect(executeInput.deviceAction.input).toEqual({
+      appName: "Bitcoin",
+      unlockTimeout: 60_000,
+    });
+    expect(Object.keys(executeInput.deviceAction.input)).toEqual([
+      "appName",
+      "unlockTimeout",
+    ]);
+    expect(Object.isFrozen(executeInput.deviceAction.input)).toBe(true);
+    expect(BitcoinOnlyOpenAppDeviceAction.length).toBe(0);
+    expect(executeInput.deviceAction.inspect).toBe(false);
+    expect(Reflect.get(executeInput.deviceAction, "logger")).toBeUndefined();
+    expect(
+      Reflect.get(executeInput.deviceAction, "loggerFactory"),
+    ).toBeUndefined();
+    expect(nativeCancel).not.toHaveBeenCalled();
+  });
+
+  it("constructs only the fixed Bitcoin install subclass and exposes its live marker", async () => {
+    const harness = await makeActionHarness("install-bitcoin");
+    const executeInput = harness.runtime.executeDeviceAction.mock
+      .calls[0]?.[0] as {
+      readonly sessionId: string;
+      readonly deviceAction: BitcoinOnlyInstallAppDeviceAction;
+    };
+
+    expect(executeInput.sessionId).toBe("native-session-secret");
+    expect(executeInput.deviceAction).toBeInstanceOf(InstallAppDeviceAction);
+    expect(executeInput.deviceAction).toBeInstanceOf(
+      BitcoinOnlyInstallAppDeviceAction,
+    );
+    expect(executeInput.deviceAction.input).toEqual({
+      appName: "Bitcoin",
+      unlockTimeout: 60_000,
+    });
+    expect(harness.operation.dispatchStarted()).toBe(true);
+    expect(harness.operation.mutationAttempted()).toBe(false);
+
+    const delegated = vi.fn(() => NEVER);
+    vi.spyOn(
+      InstallAppDeviceAction.prototype,
+      "extractDependencies",
+    ).mockReturnValue({ installApp: delegated } as never);
+    const dependencies = executeInput.deviceAction.extractDependencies(
+      {} as never,
+    );
+    dependencies.installApp({
+      input: { deviceInfo: {}, app: { versionName: "Bitcoin" } },
+    } as never);
+
+    expect(delegated).toHaveBeenCalledOnce();
+    expect(harness.operation.mutationAttempted()).toBe(true);
+  });
+
+  it("reduces only the identity-owned repeat blocker to verification required", async () => {
+    const harness = await makeActionHarness("install-bitcoin");
+    const executeInput = harness.runtime.executeDeviceAction.mock
+      .calls[0]?.[0] as {
+      readonly deviceAction: BitcoinOnlyInstallAppDeviceAction;
+    };
+    vi.spyOn(
+      InstallAppDeviceAction.prototype,
+      "extractDependencies",
+    ).mockReturnValue({ installApp: vi.fn(() => NEVER) } as never);
+    const dependencies = executeInput.deviceAction.extractDependencies(
+      {} as never,
+    );
+    const input = {
+      input: { deviceInfo: {}, app: { versionName: "Bitcoin" } },
+    } as never;
+
+    dependencies.installApp(input);
+    const blocker = await firstValueFrom(dependencies.installApp(input)).catch(
+      (error) => error,
+    );
+    harness.source.next({
+      status: DeviceActionStatus.Error,
+      error: blocker,
+    });
+
+    expect(harness.states).toEqual([{ status: "verification-required" }]);
+    expect(JSON.stringify(harness.states)).not.toContain(
+      "BitcoinInstallAlreadyAttemptedError",
+    );
+    expect(harness.nativeCancel).not.toHaveBeenCalled();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("retains dispatch-start evidence when native install invocation throws synchronously", async () => {
+    const { adapter, runtime, session } = await makeConnectedAdapter();
+    const rawError = new Error("private-sync-install-dispatch-canary");
+    runtime.executeDeviceAction.mockImplementation(() => {
+      throw rawError;
+    });
+
+    const operation = adapter.runAction(session, { kind: "install-bitcoin" });
+    expect(operation.dispatchStarted()).toBe(true);
+    expect(operation.mutationAttempted()).toBe(false);
+    await expect(runDmkAction(operation).result).resolves.toEqual({
+      status: "subscription-error",
+      rawError,
+    });
+    expect(runtime.executeDeviceAction).toHaveBeenCalledOnce();
+  });
+
+  it("reduces only reviewed install interactions, unit progress, and exact void completion", async () => {
+    const harness = await makeActionHarness("install-bitcoin");
+    const deviceIdGetter = vi.fn(() => new Uint8Array([1, 2, 3]));
+    const progress = {
+      requiredUserInteraction: UserInteractionRequired.AllowSecureConnection,
+      progress: 1,
+    };
+    Object.defineProperty(progress, "deviceId", {
+      enumerable: true,
+      get: deviceIdGetter,
+    });
+
+    harness.source.next({ status: DeviceActionStatus.NotStarted });
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: {
+        requiredUserInteraction: UserInteractionRequired.None,
+        progress: 0,
+      },
+    });
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: {
+        requiredUserInteraction: UserInteractionRequired.UnlockDevice,
+        progress: 0.555,
+      },
+    });
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: progress,
+    });
+
+    expect(harness.states).toEqual([
+      { status: "not-started" },
+      { status: "pending", progress: 0 },
+      { status: "pending", interaction: "unlock-device", progress: 0.555 },
+      {
+        status: "pending",
+        interaction: "allow-secure-connection",
+        progress: 1,
+      },
+    ]);
+    expect(deviceIdGetter).not.toHaveBeenCalled();
+    expect(harness.source.unsubscribe).not.toHaveBeenCalled();
+
+    harness.source.next({
+      status: DeviceActionStatus.Completed,
+      output: undefined,
+    });
+
+    expect(harness.states.at(-1)).toEqual({
+      status: "completed",
+      output: { actionCompleted: true },
+    });
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(harness.nativeCancel).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, -0.01, 1.01, Number.NaN, "0.5"])(
+    "fails closed for invalid install progress %j",
+    async (progress) => {
+      const harness = await makeActionHarness("install-bitcoin");
+
+      harness.source.next({
+        status: DeviceActionStatus.Pending,
+        intermediateValue: {
+          requiredUserInteraction: UserInteractionRequired.None,
+          progress,
+        },
+      });
+
+      expectFailedClosedState(harness.states);
+      expect(harness.nativeCancel).toHaveBeenCalledOnce();
+      expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["missing", { status: DeviceActionStatus.Completed }],
+    ["null", { status: DeviceActionStatus.Completed, output: null }],
+    ["object", { status: DeviceActionStatus.Completed, output: {} }],
+    ["false", { status: DeviceActionStatus.Completed, output: false }],
+  ])("rejects %s install completion evidence", async (_name, state) => {
+    const harness = await makeActionHarness("install-bitcoin");
+
+    harness.source.next(state);
+
+    expectFailedClosedState(harness.states);
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("reduces only the pinned open interactions and exact void completion", async () => {
+    const harness = await makeActionHarness("open-bitcoin");
+    const stepGetter = vi.fn(() => "private-open-step-canary");
+    const confirmIntermediate = {
+      requiredUserInteraction: UserInteractionRequired.ConfirmOpenApp,
+    };
+    Object.defineProperty(confirmIntermediate, "step", {
+      enumerable: true,
+      get: stepGetter,
+    });
+
+    harness.source.next({ status: DeviceActionStatus.NotStarted });
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: {
+        requiredUserInteraction: UserInteractionRequired.None,
+      },
+    });
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: {
+        requiredUserInteraction: UserInteractionRequired.UnlockDevice,
+      },
+    });
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: confirmIntermediate,
+    });
+
+    expect(harness.states).toEqual([
+      { status: "not-started" },
+      { status: "pending" },
+      { status: "pending", interaction: "unlock-device" },
+      { status: "pending", interaction: "confirm-open-app" },
+    ]);
+    expect(stepGetter).not.toHaveBeenCalled();
+
+    harness.source.next({
+      status: DeviceActionStatus.Completed,
+      output: undefined,
+    });
+    harness.source.next({
+      status: DeviceActionStatus.Error,
+      error: new Error("private-late-open-error-canary"),
+    });
+    harness.source.complete();
+
+    expect(harness.states.at(-1)).toEqual({
+      status: "completed",
+      output: { appOpened: true },
+    });
+    expect(Object.isFrozen(harness.states.at(-1))).toBe(true);
+    const completed = harness.states.at(-1);
+    expect(
+      completed?.status === "completed" && Object.isFrozen(completed.output),
+    ).toBe(true);
+    expect(JSON.stringify(harness.states)).not.toContain(
+      "private-late-open-error-canary",
+    );
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(harness.nativeCancel).not.toHaveBeenCalled();
+    expect(harness.observer.complete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "secure-channel confirmation",
+      UserInteractionRequired.AllowSecureConnection,
+    ],
+    ["future interaction", "private-future-open-interaction-canary"],
+  ])("fails closed for unapproved open %s", async (_name, interaction) => {
+    const harness = await makeActionHarness("open-bitcoin");
+
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue: { requiredUserInteraction: interaction },
+    });
+
+    expectFailedClosedState(harness.states);
+    expect(JSON.stringify(harness.states)).not.toContain(
+      "private-future-open-interaction-canary",
+    );
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("does not invoke an open-interaction accessor while failing closed", async () => {
+    const harness = await makeActionHarness("open-bitcoin");
+    const interactionGetter = vi.fn(
+      () => UserInteractionRequired.ConfirmOpenApp,
+    );
+    const intermediateValue = Object.defineProperty(
+      {},
+      "requiredUserInteraction",
+      { get: interactionGetter },
+    );
+
+    harness.source.next({
+      status: DeviceActionStatus.Pending,
+      intermediateValue,
+    });
+
+    expectFailedClosedState(harness.states);
+    expect(interactionGetter).not.toHaveBeenCalled();
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["missing", { status: DeviceActionStatus.Completed }],
+    ["null", { status: DeviceActionStatus.Completed, output: null }],
+    ["object", { status: DeviceActionStatus.Completed, output: {} }],
+    ["false", { status: DeviceActionStatus.Completed, output: false }],
+  ])("rejects %s open completion evidence", async (_name, state) => {
+    const harness = await makeActionHarness("open-bitcoin");
+
+    harness.source.next(state);
+
+    expectFailedClosedState(harness.states);
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("does not invoke a native open-output accessor while failing closed", async () => {
+    const harness = await makeActionHarness("open-bitcoin");
+    const outputGetter = vi.fn(() => undefined);
+    const state = { status: DeviceActionStatus.Completed };
+    Object.defineProperty(state, "output", { get: outputGetter });
+
+    harness.source.next(state);
+
+    expectFailedClosedState(harness.states);
+    expect(outputGetter).not.toHaveBeenCalled();
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("keeps native open errors private and stopped states non-successful", async () => {
+    const rawError = {
+      _tag: "ActionRefusedError",
+      detail: "private-open-error-and-apdu-canary",
+    };
+    const errorHarness = await makeActionHarness("open-bitcoin");
+
+    errorHarness.source.next({
+      status: DeviceActionStatus.Error,
+      error: rawError,
+    });
+
+    expect(errorHarness.states).toEqual([{ status: "error", rawError }]);
+    expect(errorHarness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(errorHarness.nativeCancel).not.toHaveBeenCalled();
+
+    const stoppedHarness = await makeActionHarness("open-bitcoin");
+    stoppedHarness.source.next({ status: DeviceActionStatus.Stopped });
+
+    expect(stoppedHarness.states).toEqual([{ status: "stopped" }]);
+    expect(stoppedHarness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(stoppedHarness.nativeCancel).not.toHaveBeenCalled();
+  });
+
+  it("forwards open stream failure/completion without inventing success", async () => {
+    const rawError = new Error("private-open-stream-error-canary");
+    const errorHarness = await makeActionHarness("open-bitcoin");
+    errorHarness.source.error(rawError);
+
+    expect(errorHarness.states).toEqual([]);
+    expect(errorHarness.observer.error).toHaveBeenCalledWith(rawError);
+    expect(errorHarness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(errorHarness.nativeCancel).not.toHaveBeenCalled();
+
+    const completeHarness = await makeActionHarness("open-bitcoin");
+    completeHarness.source.complete();
+
+    expect(completeHarness.states).toEqual([]);
+    expect(completeHarness.observer.complete).toHaveBeenCalledOnce();
+    expect(completeHarness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(completeHarness.nativeCancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels and tears down a native open operation exactly once", async () => {
+    const harness = await makeActionHarness("open-bitcoin");
+
+    harness.operation.cancel();
+    harness.operation.cancel();
+    harness.subscription.unsubscribe();
+    harness.subscription.unsubscribe();
+    harness.source.next({
+      status: DeviceActionStatus.Completed,
+      output: undefined,
+    });
+
+    expect(harness.states).toEqual([]);
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(harness.subscription.closed).toBe(true);
   });
 
   it("maps every genuine non-error status and never reads the fingerprint", async () => {
@@ -507,6 +910,7 @@ describe("DMK adapter", () => {
     expect(errorHarness.observer.error).toHaveBeenCalledWith(streamError);
     expect(errorHarness.states).toEqual([]);
     expect(errorHarness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(errorHarness.nativeCancel).not.toHaveBeenCalled();
 
     const completeHarness = await makeActionHarness("genuine");
     completeHarness.source.complete();
@@ -514,6 +918,7 @@ describe("DMK adapter", () => {
     expect(completeHarness.observer.complete).toHaveBeenCalledOnce();
     expect(completeHarness.states).toEqual([]);
     expect(completeHarness.source.unsubscribe).toHaveBeenCalledOnce();
+    expect(completeHarness.nativeCancel).not.toHaveBeenCalled();
   });
 
   it("contains a pending observer failure and cleans up both native paths once", async () => {
@@ -558,7 +963,7 @@ describe("DMK adapter", () => {
     expect(() =>
       errorHarness.source.error(new Error("private-native-error-canary")),
     ).not.toThrow();
-    expect(errorHarness.nativeCancel).toHaveBeenCalledOnce();
+    expect(errorHarness.nativeCancel).not.toHaveBeenCalled();
     expect(errorHarness.source.unsubscribe).toHaveBeenCalledOnce();
 
     const completeHarness = await makeActionHarness("genuine");
@@ -566,7 +971,7 @@ describe("DMK adapter", () => {
       throw new Error("private-complete-listener-canary");
     });
     expect(() => completeHarness.source.complete()).not.toThrow();
-    expect(completeHarness.nativeCancel).toHaveBeenCalledOnce();
+    expect(completeHarness.nativeCancel).not.toHaveBeenCalled();
     expect(completeHarness.source.unsubscribe).toHaveBeenCalledOnce();
   });
 
@@ -791,10 +1196,7 @@ describe("DMK adapter", () => {
     ["string", { isGenuine: "true" }],
     ["number", { isGenuine: 1 }],
     ["null", { isGenuine: null }],
-    [
-      "callable",
-      Object.assign(() => undefined, { isGenuine: true }),
-    ],
+    ["callable", Object.assign(() => undefined, { isGenuine: true })],
   ])("fails closed for %s genuine output", async (_label, output) => {
     const harness = await makeActionHarness("genuine");
 
@@ -918,10 +1320,7 @@ describe("DMK adapter", () => {
       "non-string name",
       { installedApps: [{ ...installedApp("Bitcoin"), name: 1 }] },
     ],
-    [
-      "callable app",
-      { installedApps: [callableInstalledApp("Bitcoin")] },
-    ],
+    ["callable app", { installedApps: [callableInstalledApp("Bitcoin")] }],
     ["sparse inventory", { installedApps: new Array(1) }],
   ])("fails closed for malformed list output: %s", async (_label, output) => {
     const harness = await makeActionHarness("list-bitcoin");

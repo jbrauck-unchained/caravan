@@ -27,6 +27,12 @@ export const DISABLED_SESSION_REFRESHER_OPTIONS = Object.freeze({
 /** Explicitly reviewed against the pinned DMK 1.7.1 read-only actions. */
 export const REVIEWED_READ_ONLY_UNLOCK_TIMEOUT_MS = 60_000;
 
+/** The only application target this package is permitted to manage. */
+export const BITCOIN_APP_NAME = "Bitcoin" as const;
+
+/** Explicitly reviewed against DMK 1.7.1 InstallAppDeviceAction. */
+export const REVIEWED_INSTALL_UNLOCK_TIMEOUT_MS = 60_000;
+
 export function assertValidInternalDmkServiceConfig(
   config: InternalDmkServiceConfig,
 ): void {

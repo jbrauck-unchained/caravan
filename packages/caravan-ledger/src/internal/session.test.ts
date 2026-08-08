@@ -290,8 +290,17 @@ describe("owned DMK session", () => {
     expect((await genuine.result).settlement).toBe("passed");
 
     owned.dispatchBitcoinInspection();
-    owned.dispatchBitcoinInstallation();
+    const installation = owned.dispatchBitcoinInstallation();
     owned.dispatchBitcoinOpen();
+
+    expect(Object.keys(installation)).toEqual([
+      "result",
+      "cancel",
+      "dispatchStarted",
+      "mutationAttempted",
+    ]);
+    expect(installation.dispatchStarted()).toBe(true);
+    expect(installation.mutationAttempted()).toBe(false);
 
     expect(
       fake.calls
@@ -299,6 +308,102 @@ describe("owned DMK session", () => {
         .map((call) => call.action?.kind),
     ).toEqual(["genuine", "list-bitcoin", "install-bitcoin", "open-bitcoin"]);
     await owned.disconnect();
+  });
+
+  it("preserves live install-attempt evidence through session-owned cancellation", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueAction("genuine", [
+        {
+          type: "next",
+          value: {
+            status: "completed",
+            output: { isGenuine: true },
+          },
+        },
+      ])
+      .queueAction("install-bitcoin", [
+        {
+          type: "attempt-install-mutation",
+          atMs: 5,
+          afterCancel: true,
+        },
+      ]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      modelPolicy: candidatePolicy,
+    });
+    expect((await owned.dispatchGenuineCheck().result).settlement).toBe(
+      "passed",
+    );
+    const installation = owned.dispatchBitcoinInstallation();
+
+    expect(installation.mutationAttempted()).toBe(false);
+    expect(installation.dispatchStarted()).toBe(true);
+    installation.cancel();
+    await expect(installation.result).resolves.toEqual({ status: "cancelled" });
+    await vi.advanceTimersByTimeAsync(5);
+    expect(installation.mutationAttempted()).toBe(true);
+
+    await owned.disconnect();
+  });
+
+  it("preserves install dispatch evidence across synchronous revalidation and throwing cancellation", async () => {
+    let current = true;
+    const lease = {
+      generation: 7,
+      isCurrent: () => current,
+      invalidate: () => {
+        current = false;
+      },
+      release: vi.fn(() => {
+        current = false;
+      }),
+    };
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueAction("genuine", [
+        {
+          type: "next",
+          value: {
+            status: "completed",
+            output: { isGenuine: true },
+          },
+        },
+      ])
+      .queueAction("install-bitcoin", [{ type: "never" }]);
+    const originalRunAction = fake.runAction.bind(fake);
+    vi.spyOn(fake, "runAction").mockImplementation(((session, action) => {
+      const operation = originalRunAction(session, action as never);
+      if (action.kind !== "install-bitcoin") return operation as never;
+      current = false;
+      return {
+        ...operation,
+        cancel: () => {
+          operation.cancel();
+          throw new Error("private-cancel-canary");
+        },
+      } as never;
+    }) as typeof fake.runAction);
+    const owned = await openOwnedDmkSession(fake, device, {
+      modelPolicy: candidatePolicy,
+      acquireLease: () => lease,
+    });
+    expect((await owned.dispatchGenuineCheck().result).settlement).toBe(
+      "passed",
+    );
+
+    const installation = owned.dispatchBitcoinInstallation();
+
+    expect(installation.dispatchStarted()).toBe(true);
+    expect(installation.mutationAttempted()).toBe(false);
+    await expect(installation.result).resolves.toEqual({
+      status: "cancelled",
+    });
+    expect(fake.resources().cancelCount).toBe(1);
+    await owned.disconnect();
+    expect(lease.release).toHaveBeenCalledOnce();
   });
 
   it("exposes no settlement hook that can forge strict-true genuine evidence", async () => {

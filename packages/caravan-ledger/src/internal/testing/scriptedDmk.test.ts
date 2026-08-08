@@ -130,6 +130,47 @@ describe("ScriptedDmk", () => {
     expect(fake.resources().activeSubscriptions).toBe(1);
   });
 
+  it("models the install-only mutation marker as false until its exact step", () => {
+    const fake = new ScriptedDmk(systemClock).queueAction("install-bitcoin", [
+      { type: "next", value: { status: "pending", progress: 0 }, atMs: 2 },
+      { type: "attempt-install-mutation", atMs: 5 },
+      { type: "next", value: { status: "pending", progress: 0.5 }, atMs: 8 },
+    ]);
+    const target = observer<DmkActionState<"install-bitcoin">>();
+    attachPort(target);
+    const operation = fake.runAction(session, { kind: "install-bitcoin" });
+
+    expect(operation.dispatchStarted()).toBe(true);
+    expect(operation.mutationAttempted()).toBe(false);
+    operation.stream.subscribe(target.port);
+    vi.advanceTimersByTime(4);
+    expect(operation.mutationAttempted()).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(operation.mutationAttempted()).toBe(true);
+    expect(
+      fake.calls.filter((call) => call.type === "attempt-install-mutation"),
+    ).toHaveLength(1);
+  });
+
+  it("can model an adversarial mutation attempt that wins after cancellation", () => {
+    const fake = new ScriptedDmk(systemClock).queueAction("install-bitcoin", [
+      {
+        type: "attempt-install-mutation",
+        atMs: 5,
+        afterCancel: true,
+      },
+    ]);
+    const target = observer<DmkActionState<"install-bitcoin">>();
+    attachPort(target);
+    const operation = fake.runAction(session, { kind: "install-bitcoin" });
+    operation.stream.subscribe(target.port);
+
+    operation.cancel();
+    expect(operation.mutationAttempted()).toBe(false);
+    vi.advanceTimersByTime(5);
+    expect(operation.mutationAttempted()).toBe(true);
+  });
+
   it("cancels and unsubscribes idempotently while allowing adversarial late delivery", () => {
     const late: DmkActionState<"open-bitcoin"> = {
       status: "completed",

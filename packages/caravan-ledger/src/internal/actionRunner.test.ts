@@ -67,6 +67,24 @@ describe("runDmkAction", () => {
     expect(stoppedFake.resources().unsubscribeCount).toBe(1);
   });
 
+  it("preserves the private install verification-required settlement", async () => {
+    const fake = new ScriptedDmk(systemClock).queueAction(
+      "install-bitcoin",
+      [{ type: "next", value: { status: "verification-required" } }],
+    );
+
+    await expect(
+      runDmkAction(
+        fake.runAction(session, { kind: "install-bitcoin" }),
+      ).result,
+    ).resolves.toEqual({ status: "verification-required" });
+    expect(fake.resources()).toMatchObject({
+      cancelCount: 0,
+      unsubscribeCount: 1,
+      activeSubscriptions: 0,
+    });
+  });
+
   it("distinguishes observable error from a thrown subscription", async () => {
     const streamError = new Error("stream error");
     const subscriptionError = new Error("subscription error");

@@ -5,10 +5,12 @@ import {
   type DmkActionRunResult,
 } from "./actionRunner";
 import type {
+  DmkActionOperation,
   DmkActionKind,
   DmkActionRequest,
   DmkActionState,
   DmkDiscoveredDevice,
+  DmkInstallOperation,
   DmkOperation,
   DmkPort,
   DmkSession,
@@ -78,6 +80,12 @@ export interface SessionGenuineCheckRun {
   cancel(): void;
 }
 
+export interface SessionBitcoinInstallationRun
+  extends DmkActionRun<"install-bitcoin"> {
+  dispatchStarted(): boolean;
+  mutationAttempted(): boolean;
+}
+
 export interface OpenOwnedSessionOptions {
   readonly modelPolicy?: SupportedModelPolicy;
   readonly acquireLease?: () => RuntimeLease;
@@ -120,6 +128,38 @@ function makeCancelOnceOperation<T>(
       cancelOperationSafely(operation);
     },
   };
+}
+
+class RejectedStartedInstallOperation {
+  constructor(
+    readonly operation: DmkInstallOperation<
+      DmkActionState<"install-bitcoin">
+    >,
+  ) {}
+}
+
+function conservativeInstallEvidence(query: () => boolean): boolean {
+  try {
+    return query() === false ? false : true;
+  } catch {
+    return true;
+  }
+}
+
+function rejectedStartedInstallRun(
+  operation: DmkInstallOperation<DmkActionState<"install-bitcoin">>,
+): SessionBitcoinInstallationRun {
+  const result = Promise.resolve<DmkActionRunResult<"install-bitcoin">>(
+    Object.freeze({ status: "cancelled" }),
+  );
+  return Object.freeze({
+    result,
+    cancel: () => undefined,
+    dispatchStarted: () =>
+      conservativeInstallEvidence(() => operation.dispatchStarted()),
+    mutationAttempted: () =>
+      conservativeInstallEvidence(() => operation.mutationAttempted()),
+  });
 }
 
 /** A private, generation-bound capability for later closed action adapters. */
@@ -230,8 +270,27 @@ export class OwnedDmkSession {
 
   dispatchBitcoinInstallation(
     options: DmkActionRunOptions = {},
-  ): DmkActionRun<"install-bitcoin"> {
-    return this.#dispatchProtectedAction({ kind: "install-bitcoin" }, options);
+  ): SessionBitcoinInstallationRun {
+    let operation: DmkInstallOperation<DmkActionState<"install-bitcoin">>;
+    try {
+      operation = this.#createProtectedOperation({
+        kind: "install-bitcoin",
+      });
+    } catch (error) {
+      if (error instanceof RejectedStartedInstallOperation) {
+        return rejectedStartedInstallRun(error.operation);
+      }
+      throw error;
+    }
+    const run = this.#startTrackedAction(operation, options);
+    return Object.freeze({
+      result: run.result,
+      cancel: () => run.cancel(),
+      dispatchStarted: () =>
+        conservativeInstallEvidence(() => operation.dispatchStarted()),
+      mutationAttempted: () =>
+        conservativeInstallEvidence(() => operation.mutationAttempted()),
+    });
   }
 
   dispatchBitcoinOpen(
@@ -311,6 +370,17 @@ export class OwnedDmkSession {
     action: Extract<DmkActionRequest, { readonly kind: K }>,
     options: DmkActionRunOptions,
   ): DmkActionRun<K> {
+    return this.#startTrackedAction<K>(
+      this.#createProtectedOperation(action) as DmkOperation<
+        DmkActionState<K>
+      >,
+      options,
+    );
+  }
+
+  #createProtectedOperation<K extends Exclude<DmkActionKind, "genuine">>(
+    action: Extract<DmkActionRequest, { readonly kind: K }>,
+  ): DmkActionOperation<K> {
     this.#assertCurrent();
     const generation = this.#lease.generation;
     if (this.#genuineGeneration !== generation) {
@@ -322,13 +392,27 @@ export class OwnedDmkSession {
     if (!this.#lease.isCurrent() || this.#lease.generation !== generation) {
       cancelOperationSafely(operation);
       this.#notifyInvalidated();
+      if (action.kind === "install-bitcoin") {
+        throw new RejectedStartedInstallOperation(
+          operation as DmkInstallOperation<
+            DmkActionState<"install-bitcoin">
+          >,
+        );
+      }
       throw new InactiveLedgerSessionError();
     }
     if (this.#genuineGeneration !== generation) {
       cancelOperationSafely(operation);
+      if (action.kind === "install-bitcoin") {
+        throw new RejectedStartedInstallOperation(
+          operation as DmkInstallOperation<
+            DmkActionState<"install-bitcoin">
+          >,
+        );
+      }
       throw new GenuineLedgerSessionRequiredError();
     }
-    return this.#startTrackedAction(operation, options);
+    return operation;
   }
 
   #runCurrentAction<K extends DmkActionKind>(
@@ -342,7 +426,10 @@ export class OwnedDmkSession {
       this.#notifyInvalidated();
       throw new InactiveLedgerSessionError();
     }
-    return this.#startTrackedAction(operation, options);
+    return this.#startTrackedAction<K>(
+      operation as DmkOperation<DmkActionState<K>>,
+      options,
+    );
   }
 
   #startTrackedAction<K extends DmkActionKind>(

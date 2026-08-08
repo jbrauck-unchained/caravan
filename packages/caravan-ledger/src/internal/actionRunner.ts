@@ -20,6 +20,9 @@ export type DmkActionRunResult<K extends DmkActionKind> =
       readonly status: "completed";
       readonly output: DmkActionOutputByKind[K];
     }
+  | (K extends "install-bitcoin"
+      ? { readonly status: "verification-required" }
+      : never)
   | { readonly status: "action-error"; readonly rawError: unknown }
   | { readonly status: "stopped" }
   | { readonly status: "stream-error"; readonly rawError: unknown }
@@ -135,6 +138,9 @@ export function runDmkAction<K extends DmkActionKind>(
           }
           case "completed":
             settle({ status: "completed", output: state.output });
+            return;
+          case "verification-required":
+            settle({ status: "verification-required" } as DmkActionRunResult<K>);
             return;
           case "error":
             settle({ status: "action-error", rawError: state.rawError });
