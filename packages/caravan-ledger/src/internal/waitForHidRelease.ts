@@ -1,3 +1,7 @@
+import {
+  captureHidSnapshot,
+  type HidSnapshotCaptureHandle,
+} from "./captureHidSnapshot";
 import type { Clock, ClockTimer } from "./clock";
 import {
   hidSnapshotMatchesModel,
@@ -73,8 +77,7 @@ function assertValidPolicy(policy: HidReleasePolicy): void {
 
 function isObject(value: unknown): value is object {
   return (
-    (typeof value === "object" && value !== null) ||
-    typeof value === "function"
+    (typeof value === "object" && value !== null) || typeof value === "function"
   );
 }
 
@@ -108,10 +111,7 @@ function inspectMatchingSnapshots(
       if (!isObject(snapshot)) return { status: "unavailable" };
       const identity: unknown = Reflect.get(snapshot, "identity");
       const vendorId: unknown = Reflect.get(snapshot, "vendorId");
-      if (
-        !isObject(identity) ||
-        !isUsbIdentifier(vendorId)
-      ) {
+      if (!isObject(identity) || !isUsbIdentifier(vendorId)) {
         return { status: "unavailable" };
       }
       const deviceIdentity = identity as HidDeviceIdentity;
@@ -175,7 +175,9 @@ function inspectMatchingSnapshots(
   };
 }
 
-function initialOutcome(candidate: HidReleaseCandidate): HidReleaseOutcome | undefined {
+function initialOutcome(
+  candidate: HidReleaseCandidate,
+): HidReleaseOutcome | undefined {
   switch (candidate.kind) {
     case "unique":
       return undefined;
@@ -208,7 +210,10 @@ export function createHidReleaseBarrier({
   let resolveWait: ((outcome: HidReleaseOutcome) => void) | undefined;
   let unsubscribeChanges: (() => void) | undefined;
   let unsubscribePending = false;
-  let abortArmSnapshot: (() => void) | undefined;
+  let activeCapture: HidSnapshotCaptureHandle | undefined;
+  let captureStartInProgress = false;
+  let captureCancellationRequested = false;
+  const cancelledCaptures = new WeakSet<HidSnapshotCaptureHandle>();
   let deadlineTimer: ClockTimer | undefined;
   let quietTimer: ClockTimer | undefined;
   let pollTimer: ClockTimer | undefined;
@@ -229,17 +234,93 @@ export function createHidReleaseBarrier({
     }
   };
 
+  const clearDeadlineTimer = (): void => {
+    const timer = deadlineTimer;
+    deadlineTimer = undefined;
+    clearTimer(timer);
+  };
+
+  const clearQuietTimer = (): void => {
+    const timer = quietTimer;
+    quietTimer = undefined;
+    clearTimer(timer);
+  };
+
+  const clearPollTimer = (): void => {
+    const timer = pollTimer;
+    pollTimer = undefined;
+    clearTimer(timer);
+  };
+
+  const cancelCaptureOnce = (capture: HidSnapshotCaptureHandle): void => {
+    if (cancelledCaptures.has(capture)) return;
+    cancelledCaptures.add(capture);
+    try {
+      capture.cancel();
+    } catch {
+      // Capture cancellation is local teardown and must remain total.
+    }
+  };
+
+  const cancelActiveCapture = (): void => {
+    if (captureStartInProgress) captureCancellationRequested = true;
+    const capture = activeCapture;
+    activeCapture = undefined;
+    if (capture) cancelCaptureOnce(capture);
+  };
+
+  const readSnapshot = async (): Promise<
+    readonly HidDeviceSnapshot[] | undefined
+  > => {
+    if (
+      terminalOutcome !== undefined ||
+      activeCapture !== undefined ||
+      captureStartInProgress
+    ) {
+      return undefined;
+    }
+
+    captureStartInProgress = true;
+    captureCancellationRequested = false;
+    let capture: HidSnapshotCaptureHandle | undefined;
+    try {
+      // captureHidSnapshot invokes getGrantedDevices synchronously here.
+      capture = captureHidSnapshot({
+        clock,
+        hidPort,
+        snapshotTimeoutMs: policy.snapshotTimeoutMs,
+      });
+    } catch {
+      return undefined;
+    } finally {
+      captureStartInProgress = false;
+    }
+
+    const cancelStartedCapture =
+      captureCancellationRequested || terminalOutcome !== undefined;
+    captureCancellationRequested = false;
+    if (cancelStartedCapture) {
+      cancelCaptureOnce(capture);
+    } else {
+      activeCapture = capture;
+    }
+
+    try {
+      return await capture.result;
+    } catch {
+      return undefined;
+    } finally {
+      if (activeCapture === capture) activeCapture = undefined;
+    }
+  };
+
   const cleanup = (): void => {
     unsubscribePending = true;
     quietGeneration = Object.freeze({});
-    abortArmSnapshot?.();
-    abortArmSnapshot = undefined;
-    clearTimer(deadlineTimer);
-    deadlineTimer = undefined;
-    clearTimer(quietTimer);
-    quietTimer = undefined;
-    clearTimer(pollTimer);
-    pollTimer = undefined;
+    cancelActiveCapture();
+    clearDeadlineTimer();
+    clearQuietTimer();
+    clearPollTimer();
     if (unsubscribeChanges) {
       const unsubscribe = unsubscribeChanges;
       unsubscribeChanges = undefined;
@@ -293,10 +374,10 @@ export function createHidReleaseBarrier({
     }
   };
 
-  const scheduleQuietTimer: (
-    generation: object,
-    delayMs: number,
-  ) => void = (generation, delayMs) => {
+  const scheduleQuietTimer: (generation: object, delayMs: number) => void = (
+    generation,
+    delayMs,
+  ) => {
     if (terminalOutcome !== undefined || generation !== quietGeneration) return;
 
     try {
@@ -307,10 +388,7 @@ export function createHidReleaseBarrier({
           firedSynchronously = true;
           return;
         }
-        if (
-          terminalOutcome !== undefined ||
-          generation !== quietGeneration
-        ) {
+        if (terminalOutcome !== undefined || generation !== quietGeneration) {
           return;
         }
         quietTimer = undefined;
@@ -366,8 +444,7 @@ export function createHidReleaseBarrier({
     quietDeadlineAt = target;
     quietGeneration = Object.freeze({});
     const generation = quietGeneration;
-    clearTimer(quietTimer);
-    quietTimer = undefined;
+    clearQuietTimer();
     scheduleQuietTimer(generation, policy.reconnectQuietPeriodMs);
   };
 
@@ -376,8 +453,7 @@ export function createHidReleaseBarrier({
     quietPeriodElapsed = false;
     quietDeadlineAt = undefined;
     quietGeneration = Object.freeze({});
-    clearTimer(quietTimer);
-    quietTimer = undefined;
+    clearQuietTimer();
   };
 
   const onDeviceChange = (change: HidDeviceChange): void => {
@@ -398,10 +474,7 @@ export function createHidReleaseBarrier({
       finish("unavailable");
       return;
     }
-    if (
-      inspection.hasUnknownIdentity ||
-      inspection.hasUnexpectedOpenedPeer
-    ) {
+    if (inspection.hasUnknownIdentity || inspection.hasUnexpectedOpenedPeer) {
       finish("ambiguous");
       return;
     }
@@ -420,53 +493,6 @@ export function createHidReleaseBarrier({
     observeCandidateAbsentAt(now, true);
   };
 
-  const readArmSnapshot = (): Promise<
-    readonly HidDeviceSnapshot[] | undefined
-  > =>
-    new Promise((resolve) => {
-      let settled = false;
-      let timeout: ClockTimer | undefined;
-      const settle = (
-        snapshots: readonly HidDeviceSnapshot[] | undefined,
-      ): void => {
-        if (settled) return;
-        settled = true;
-        clearTimer(timeout);
-        timeout = undefined;
-        abortArmSnapshot = undefined;
-        resolve(snapshots);
-      };
-
-      abortArmSnapshot = () => settle(undefined);
-      try {
-        const scheduledTimer = clock.setTimeout(
-          () => settle(undefined),
-          policy.snapshotTimeoutMs,
-        );
-        if (settled) {
-          clearTimer(scheduledTimer);
-        } else {
-          timeout = scheduledTimer;
-        }
-      } catch {
-        settle(undefined);
-        return;
-      }
-      if (settled) return;
-
-      let request: Promise<readonly HidDeviceSnapshot[]>;
-      try {
-        request = hidPort.getGrantedDevices();
-      } catch {
-        settle(undefined);
-        return;
-      }
-      void Promise.resolve(request).then(
-        (snapshots) => settle(snapshots),
-        () => settle(undefined),
-      );
-    });
-
   const runArm = async (): Promise<void> => {
     if (!uniqueCandidate || terminalOutcome !== undefined) return;
 
@@ -484,9 +510,20 @@ export function createHidReleaseBarrier({
     }
     if (terminalOutcome !== undefined) return;
 
-    const snapshots = await readArmSnapshot();
+    const snapshots = await readSnapshot();
     if (terminalOutcome !== undefined) return;
     if (!snapshots) {
+      if (deadlineAt !== undefined) {
+        const now = readMonotonicNow();
+        if (now === undefined) {
+          finish("unavailable");
+          return;
+        }
+        if (deadlineElapsedAt(now)) {
+          finish("timed-out");
+          return;
+        }
+      }
       finish("unavailable");
       return;
     }
@@ -496,10 +533,7 @@ export function createHidReleaseBarrier({
       finish("unavailable");
       return;
     }
-    if (
-      inspection.hasUnknownIdentity ||
-      inspection.hasUnexpectedOpenedPeer
-    ) {
+    if (inspection.hasUnknownIdentity || inspection.hasUnexpectedOpenedPeer) {
       finish("ambiguous");
       return;
     }
@@ -640,15 +674,14 @@ export function createHidReleaseBarrier({
       }
 
       pollInFlight = true;
-      let snapshots: readonly HidDeviceSnapshot[];
+      let snapshots: readonly HidDeviceSnapshot[] | undefined;
       try {
-        snapshots = await hidPort.getGrantedDevices();
+        snapshots = await readSnapshot();
       } catch {
+        snapshots = undefined;
+      } finally {
         pollInFlight = false;
-        if (terminalOutcome === undefined) finish("unavailable");
-        return;
       }
-      pollInFlight = false;
       if (terminalOutcome !== undefined) return;
 
       const now = readMonotonicNow();
@@ -658,6 +691,10 @@ export function createHidReleaseBarrier({
       }
       if (deadlineElapsedAt(now)) {
         finish("timed-out");
+        return;
+      }
+      if (!snapshots) {
+        finish("unavailable");
         return;
       }
 
@@ -675,10 +712,7 @@ export function createHidReleaseBarrier({
         finish("timed-out");
         return;
       }
-      if (
-        inspection.hasUnknownIdentity ||
-        inspection.hasUnexpectedOpenedPeer
-      ) {
+      if (inspection.hasUnknownIdentity || inspection.hasUnexpectedOpenedPeer) {
         finish("ambiguous");
         return;
       }
