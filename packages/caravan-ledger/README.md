@@ -1,124 +1,265 @@
 # `@caravan/ledger`
 
-`@caravan/ledger` is a browser-only, framework-neutral package for a narrowly
-scoped Ledger Bitcoin app preparation flow. It is separate from
-`@caravan/wallets`, which continues to own WebUSB signing.
+`@caravan/ledger` is a browser-only, framework-neutral workflow for checking a
+Ledger device for the official application named exactly `Bitcoin`, installing
+it only when absent, independently verifying the result, attempting to open it,
+and releasing WebHID before Caravan's existing WebUSB signing flow.
 
-This workspace is a private, versioned `0.0.0` implementation foundation and
-cannot be published. Its parameterless public factory now exposes the complete
-Phase 3 read-only preparation flow against deterministic fakes. Production
-hardware remains fail closed because the reviewed production model allowlist is
-intentionally empty.
+> **Private readiness status:** this workspace is `private: true`, versioned
+> `0.0.0`, and is not approved for publication or live Ledger service use. The
+> production model allowlist is implemented but intentionally empty, so no
+> device, firmware, browser, or operating-system combination is supported yet.
+
+The package does not sign, access private keys or recovery phrases, or expose a
+general Ledger management API. `@caravan/wallets` remains the owner of the
+later WebUSB signing session.
 
 ## Runtime and packaging
 
-- Modern secure-context browsers with WebHID only
-- ECMAScript modules only; no CommonJS entry point
-- No browser globals or permission APIs touched while importing the package
-- No React, Redux, Node.js polyfills, or signing dependency
+- Browser-only operation in an approved secure context with WebHID.
+- ESM-only and framework-neutral; no CommonJS entry point.
+- Static import, support probing, and factory construction do not prompt for a
+  device, construct the Ledger runtime, or contact a service.
+- Browser-aware bundlers select `dist/browser.js`. Node and SSR select the
+  management-inert `dist/index.js` entry.
+- Runtime dependencies are pinned exactly to
+  `@ledgerhq/device-management-kit@1.7.1`,
+  `@ledgerhq/device-transport-kit-web-hid@1.2.4`, and `rxjs@7.8.2`.
 
-The package has two ESM artifacts behind one root export. Browser-aware
-bundlers select `dist/browser.js`, which statically imports the pinned Ledger
-adapter but does not construct it until `prepare()`. Native Node and SSR select
-the SDK-free `dist/index.js`; its factory returns the same facade but always
-reports an unsupported environment. `module` and `browser` point to the browser
-artifact for older bundlers, while the ordered `node` export condition keeps
-native Node on the neutral artifact.
+`getBitcoinInstallerSupport()` reports only whether the current environment
+has the required browser, secure-context, and WebHID capabilities. A positive
+probe is not a support, authorization, hardware, firmware, or service-availability
+claim.
 
-## Read-only API
+When `supported` is false, `reason` is the first failed capability in this
+order: `not-browser`, `insecure-context`, or `webhid-unavailable`. Do not call
+`prepare()` after a negative probe. An absent `reason` accompanies the positive
+capability result; it still is not a support claim.
+
+## Safe consumer lifecycle
+
+Import the package while loading the consumer screen. Do not dynamically import
+it from the button handler: that asynchronous boundary can consume the browser's
+transient user activation before the WebHID chooser begins.
+
+The example below uses only the public package API. The consumer owns all
+rendering, entitlement checks, confirmation copy, reconnect guidance, and the
+later signing integration.
 
 ```ts
-import { createBitcoinAppInstaller } from "@caravan/ledger";
+import {
+  BitcoinInstallerError,
+  createBitcoinAppInstaller,
+  getBitcoinInstallerSupport,
+  type BitcoinInstallPlan,
+  type BitcoinInstallResult,
+  type BitcoinInstallerEvent,
+} from "@caravan/ledger";
+
+declare const prepareButton: HTMLButtonElement;
+declare const confirmButton: HTMLButtonElement;
+declare const recoverButton: HTMLButtonElement;
+declare const cancelButton: HTMLButtonElement;
+declare const signingButton: HTMLButtonElement;
+declare const consumerPolicyAllowsInstaller: boolean;
+declare function renderEvent(event: BitcoinInstallerEvent): void;
+declare function renderPlanForExplicitConfirmation(
+  status: BitcoinInstallPlan["status"],
+): void;
+declare function renderResult(result: BitcoinInstallResult): void;
+declare function renderError(error: BitcoinInstallerError): void;
+declare function showReconnectGuidance(): void;
+declare function beginExistingWebUsbSigningFlow(): void;
+
+const support = getBitcoinInstallerSupport();
+prepareButton.disabled = !support.supported || !consumerPolicyAllowsInstaller;
+recoverButton.disabled = true;
+confirmButton.disabled = true;
+signingButton.disabled = true;
 
 const installer = createBitcoinAppInstaller();
-const unsubscribe = installer.subscribe((event) => {
-  renderLedgerProgress(event);
+const unsubscribe = installer.subscribe(renderEvent);
+let pendingPlan: BitcoinInstallPlan | undefined;
+let abandoning = false;
+
+function handleFailure(error: unknown): void {
+  prepareButton.disabled = true;
+  recoverButton.disabled = true;
+  confirmButton.disabled = true;
+  signingButton.disabled = true;
+  if (error instanceof BitcoinInstallerError) {
+    renderError(error);
+    const mayRecover =
+      !abandoning &&
+      (error.code === "state-unknown" || error.code === "insufficient-space");
+    recoverButton.disabled = !mayRecover;
+    if (!abandoning && error.code === "cancelled") {
+      prepareButton.disabled =
+        !support.supported || !consumerPolicyAllowsInstaller;
+    }
+  }
+}
+
+function offerPlan(plan: BitcoinInstallPlan): void {
+  pendingPlan = plan;
+  renderPlanForExplicitConfirmation(plan.status);
+  recoverButton.disabled = true;
+  confirmButton.disabled = false;
+}
+
+// This call must remain directly in the click callback, before an await,
+// timer, microtask hop, or dynamic import.
+prepareButton.addEventListener("click", () => {
+  prepareButton.disabled = true;
+  const preparation = installer.prepare();
+  void preparation.then(offerPlan, handleFailure);
 });
 
-try {
-  const plan = await installer.prepare();
-  renderConfirmation(plan.status);
-} finally {
+// This separate consumer action is the explicit confirmation boundary.
+confirmButton.addEventListener("click", () => {
+  const plan = pendingPlan;
+  if (!plan) return;
+  pendingPlan = undefined;
+  confirmButton.disabled = true;
+
+  void installer.install(plan).then((result) => {
+    renderResult(result);
+    if (result.handoff === "ready") {
+      // Enabling is not acquisition. WebUSB may start only from a later click.
+      signingButton.disabled = false;
+    } else {
+      signingButton.disabled = true;
+      showReconnectGuidance();
+    }
+  }, handleFailure);
+});
+
+// Recovery is inspection, never an automatic install retry. It also needs a
+// new direct user gesture because it opens a new chooser/session.
+recoverButton.addEventListener("click", () => {
+  recoverButton.disabled = true;
+  const recovery = installer.recover();
+  void recovery.then(offerPlan, handleFailure);
+});
+
+cancelButton.addEventListener("click", () => installer.cancel());
+
+// This is a later, independent user gesture. Do not call it from install().
+signingButton.addEventListener("click", () => {
+  beginExistingWebUsbSigningFlow();
+});
+
+// Await this on ordinary route abandonment. A page lifecycle event may not
+// allow waiting, but should still request best-effort disposal.
+async function leaveInstallerRoute(): Promise<void> {
+  abandoning = true;
   unsubscribe();
   await installer.dispose();
 }
+window.addEventListener("pagehide", () => {
+  void leaveInstallerRoute();
+});
 ```
 
-`prepare()` performs only support checking, device selection, connection,
-genuine checking, and exact Bitcoin-presence inspection. It never installs,
-updates, uninstalls, or opens an app. A successful result is a frozen,
-in-memory, instance/session-bound plan with a five-minute lifetime. Serialized,
-forged, foreign, expired, cancelled, disconnected, and disposed plans carry no
-authority. Phase 3 deliberately rejects `install()` and `recover()` before any
-mutating action exists.
+Before enabling the preparation button, the consumer must also enforce its own
+authentication, entitlement, feature, and rollout policy. The package narrows
+device authority; it is not an access-control boundary.
 
-The initial `prepare()` call must remain directly inside the user activation
-that is allowed to open the WebHID chooser. Support checking, realm-wide lease
-reservation, the selecting transition, discovery start, and discovery
-subscription all occur synchronously in that call.
+## Plans, confirmation, and results
 
-## Reviewed runtime dependencies
+`prepare()` performs selection, connection, the compiled model gate, a genuine
+check, and a fresh Bitcoin-presence inspection. It performs no install, update,
+uninstall, or open action. It returns one opaque, short-lived, single-use plan:
 
-The private foundation pins and externalizes these runtime dependencies:
+- `installation-required` means the fresh inspection found Bitcoin absent.
+- `already-installed` means the fresh inspection found Bitcoin present; the
+  later `install(plan)` call performs no install or update mutation.
 
-- `@ledgerhq/device-management-kit@1.7.1`
-- `@ledgerhq/device-transport-kit-web-hid@1.2.4`
-- `rxjs@7.8.2`
+The caller must display its own explicit confirmation before passing that exact
+plan object to `install(plan)`. A copied, serialized, forged, expired, replayed,
+cross-instance, cross-session, disconnected, cancelled, or disposed plan has no
+authority.
 
-The browser root is evaluated through Vitest and through a clean packed Webpack
-5.64.4 consumer without constructing DMK, requesting permission, enumerating
-devices, opening a network connection, or logging. A separate native-Node gate
-proves the package export resolves to the neutral artifact. The pinned Ledger
-packages' published ESM entries currently contain directory re-exports that
-Node does not resolve directly, which is why native Node must not select the
-browser artifact.
+The three result fields are independent:
 
-## Cleanup limitation
+| Field                           | Meaning                                                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `status: "installed"`           | One install was dispatched and a new independent listing later proved Bitcoin present.                  |
+| `status: "already-installed"`   | Preparation proved Bitcoin present and no install/update was dispatched.                                |
+| `appOpen: true`                 | The one fixed open-Bitcoin attempt completed successfully.                                              |
+| `appOpen: false`                | Open was refused, failed, timed out, or was cancelled after the Bitcoin disposition was already proven. |
+| `handoff: "ready"`              | The selected WebHID object was observed closed before the release deadline.                             |
+| `handoff: "reconnect-required"` | Release could not be proved; preserve the Bitcoin disposition but require the reviewed reconnect path.  |
 
-The pinned DMK boundary exposes `connect()` and `disconnect()` only as promises;
-it provides no abort signal or bounded settlement guarantee. If either promise
-never settles, cancellation/disposal must retain the realm-wide lease and await
-it so that a late connection cannot create an unowned device session. Releasing
-the lease early or resolving `dispose()` would falsely claim cleanup. The race
-suite pins this fail-closed limitation until a reviewed bounded cleanup policy
-or an abortable pinned-SDK primitive exists.
+`ready-for-webusb` is the terminal management phase for both handoff values.
+Even `handoff: "ready"` does not grant WebUSB permission or authorize an
+automatic signing connection. Signing starts only from a later consumer-owned
+click. A reconnect-required result must not automatically open WebUSB.
 
-## Authority boundary
+## Cancellation, recovery, and disposal
 
-The intended first public contract will manage only Ledger's official app named
-exactly `Bitcoin`. It will not expose arbitrary app names, updates, downgrades,
-uninstall, firmware, language packs, raw APDUs, Ledger transports, providers,
-endpoints, or signing.
+- `cancel()` is synchronous, cooperative, and idempotent. A browser chooser or
+  device exchange may finish after cancellation was requested; stale results
+  are ignored and cleanup remains awaited by the active promise.
+- Cancellation before mutation rejects with `cancelled`. Once mutation may
+  have started and before a fresh listing proves Bitcoin present, ambiguity is
+  `state-unknown` and the lifecycle enters `needs-recovery`.
+- `recover()` is valid only from `needs-recovery`, including the reviewed
+  `insufficient-space` path as well as `state-unknown`. It must be called
+  directly from a new user gesture, creates a new session, and rechecks genuine
+  status and Bitcoin presence. It never retries installation automatically.
+- `dispose()` is asynchronous, idempotent, and permanent. Await it on normal
+  abandonment or navigation wherever the consumer lifecycle allows. It
+  invalidates plans and waits for owned cleanup; repeated disposal is safe.
+  Disposal is not rollback and does not erase mutation truth: an active install
+  still rejects with `state-unknown` or the preserved `insufficient-space`
+  classification when that is the safe outcome.
 
-The normative architecture, authorization, security, public-contract, and
-support decisions live in the repository's
-[Ledger governance documents](../../documentation/ledger/adr/0001-ledger-bitcoin-installer-package.md).
+See the [integration guide](../../documentation/ledger/integration-guide.md)
+for every public phase and the
+[support runbook](../../documentation/ledger/support-runbook.md) for every
+public error and safe operator response.
+
+## Security, privacy, and network boundary
+
+- The physical Ledger screen is authoritative. Consumer copy must never advise
+  approving an unexpected prompt or disclosing a PIN, passphrase, or recovery
+  phrase.
+- Caravan returns no full app inventory, Bitcoin version, firmware, device or
+  session identifier, raw vendor error, APDU/status word, endpoint, provider,
+  transport, HID object, observable, actor, or SDK object.
+- The package initializes no Caravan logger, analytics client, or error-reporting
+  destination. The pinned WebHID dependency's Sentry behavior still requires
+  empirical privacy approval before release.
+- Exact production Ledger destinations and CSP directives are intentionally not
+  consumer documentation until written authorization is reconciled. The public
+  API accepts no endpoint, provider, token, or credential.
+- No browser secret is supported.
+
+## Non-goals and support status
+
+There is no public authority for arbitrary applications, update, downgrade,
+uninstall, storage cleanup, firmware or language management, raw APDUs, custom
+providers/endpoints, signing, or internal Ledger objects. Non-Chromium desktop
+browsers, mobile browsers, embedded webviews, Electron, React Native, and Node
+runtime operation are outside v0.1.
+
+No physical combination is currently approved. Consult the
+[support and acceptance policy](../../documentation/ledger/support-matrix.md),
+[private-readiness evidence](../../documentation/ledger/private-readiness.md),
+and [authorization gate](../../documentation/ledger/authorization-gate.md)
+before any integration or live exercise.
 
 ## Development
 
-Use the Node and npm versions pinned by the Caravan repository.
+Use Node 24 and npm 11.14.1 as pinned by the repository.
 
 ```sh
 npm run ci --workspace=@caravan/ledger
 ```
 
-`test:artifact` checks the actual built declarations, runtime export snapshot,
-manifest policy, and `npm pack --dry-run` file allowlist. `test:consumer` packs
-the package, installs that tarball into a disposable fixture whose only runtime
-dependency is `@caravan/ledger`, compiles it with TypeScript 4.6.4, and creates
-a production ESM bundle with Webpack 5.64.4. The compatibility compiler and
-bundler are fixture-only dev dependencies and never enter this package's
-manifest or tarball. Standalone packaging tests rebuild first so stale output
-cannot pass. The consumer install uses a fresh disposable npm cache and may
-require npm registry access to fetch the exact pinned compatibility tooling;
-it never writes install state into the workspace or the packed package.
-
-The Phase 3 packed-consumer baseline records the browser entry plus the expected
-Ledger SDK, RxJS, and `reflect-metadata` graph. The clean install verifies one
-RxJS 7.8.2 and one `reflect-metadata` 0.2.2 physical copy. Sizes and module
-counts are recorded as evidence, not enforced as a byte budget.
-
-Live Ledger backend or physical-device tests are prohibited until the
-[authorization gate](../../documentation/ledger/authorization-gate.md) records
-the required written agreement, configuration, test permission, and human
-sign-offs.
+The package gate runs lint, typechecking, unit/scenario tests, build, neutral
+import checks, packed API/artifact checks, and a clean TypeScript 4.6/Webpack
+5.64 consumer fixture. These deterministic gates do not replace the pending
+offline SDK provenance contract, real-browser privacy/native UI evidence,
+authorized physical matrix, root regression, or human release approvals.

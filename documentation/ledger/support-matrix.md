@@ -1,7 +1,8 @@
 # Ledger Bitcoin installer support and acceptance policy
 
 - Status: Policy proposed; all physical evidence and human approval pending
-- Compiled allowlist: Not yet implemented and contains no approved claims
+- Compiled allowlist: Implemented, intentionally empty, and contains no
+  approved claims
 - Live backend authorization: `unknown`; see the
   [authorization gate](./authorization-gate.md)
 - Initial browser targets: Current stable Chrome and Edge, pending evidence
@@ -35,35 +36,36 @@ endpoint, or provider absent from the compiled and authorized release.
 
 ## Evidence statuses
 
-| Status | Meaning | May be claimed as supported? |
-| --- | --- | --- |
-| `unknown` | Required facts have not been established. | No |
-| `pending` | Evidence or review is planned/in progress but incomplete. | No |
-| `passed` | The named test evidence passed for an exact combination. | Not by itself; authorization and sign-offs are also required. |
-| `failed` | At least one required acceptance path failed. | No |
-| `unsupported` | The environment is deliberately outside v0.1 or lacks a required capability. | No |
-| `approved` | All evidence, authorization, compiled policy, and human sign-offs are complete for the exact release. | Yes |
-| `expired` | Evidence or authorization is no longer current. | No |
+| Status        | Meaning                                                                                               | May be claimed as supported?                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `unknown`     | Required facts have not been established.                                                             | No                                                            |
+| `pending`     | Evidence or review is planned/in progress but incomplete.                                             | No                                                            |
+| `passed`      | The named test evidence passed for an exact combination.                                              | Not by itself; authorization and sign-offs are also required. |
+| `failed`      | At least one required acceptance path failed.                                                         | No                                                            |
+| `unsupported` | The environment is deliberately outside v0.1 or lacks a required capability.                          | No                                                            |
+| `approved`    | All evidence, authorization, compiled policy, and human sign-offs are complete for the exact release. | Yes                                                           |
+| `expired`     | Evidence or authorization is no longer current.                                                       | No                                                            |
 
 ## Candidate device models
 
-The local reviewed source baseline, whose manifest currently reports DMK
-`1.7.1`, names the following model identifiers. These are candidates for
-evidence collection only; none is approved or claimed. Before implementation,
-the exact resolved package and packed artifact must be reconciled with
-immutable reviewed source. A source/artifact or authorized-version mismatch
+The local reviewed source baseline, whose manifest currently pins DMK `1.7.1`,
+names the following model identifiers. These are candidates for evidence
+collection only; none is approved or claimed. Before any entry is added to the
+implemented but empty production allowlist, the exact resolved package and
+packed artifact must be reconciled with immutable reviewed source. A
+source/artifact or authorized-version mismatch
 invalidates this table and blocks the dependent slice until the documents,
 tests, and evidence are updated and reviewed.
 
-| SDK model | SDK identifier | Compiled in v0.1 allowlist | Physical device available | Firmware evidence | Authorization | Release status |
-| --- | --- | --- | --- | --- | --- | --- |
-| Ledger Nano S | `nanoS` | Pending decision | `unknown` | `unknown` | `unknown` | Not supported |
-| Ledger Nano S Plus | `nanoSP` | Pending decision | `unknown` | `unknown` | `unknown` | Not supported |
-| Ledger Nano X | `nanoX` | Pending decision | `unknown` | `unknown` | `unknown` | Not supported |
-| Ledger Stax | `stax` | Pending decision | `unknown` | `unknown` | `unknown` | Not supported |
-| Ledger Flex | `flex` | Pending decision | `unknown` | `unknown` | `unknown` | Not supported |
-| SDK `APEX` / identifier `apexp` | `apexp` | Pending naming and product decision | `unknown` | `unknown` | `unknown` | Not supported |
-| Any other or unknown model | Not in reviewed enum | No | Not applicable | Not applicable | Not applicable | Unsupported; fail closed |
+| SDK model                       | SDK identifier       | Compiled in v0.1 allowlist                            | Physical device available | Firmware evidence | Authorization  | Release status           |
+| ------------------------------- | -------------------- | ----------------------------------------------------- | ------------------------- | ----------------- | -------------- | ------------------------ |
+| Ledger Nano S                   | `nanoS`              | No — empty allowlist                                  | `unknown`                 | `unknown`         | `unknown`      | Not supported            |
+| Ledger Nano S Plus              | `nanoSP`             | No — empty allowlist                                  | `unknown`                 | `unknown`         | `unknown`      | Not supported            |
+| Ledger Nano X                   | `nanoX`              | No — empty allowlist                                  | `unknown`                 | `unknown`         | `unknown`      | Not supported            |
+| Ledger Stax                     | `stax`               | No — empty allowlist                                  | `unknown`                 | `unknown`         | `unknown`      | Not supported            |
+| Ledger Flex                     | `flex`               | No — empty allowlist                                  | `unknown`                 | `unknown`         | `unknown`      | Not supported            |
+| SDK `APEX` / identifier `apexp` | `apexp`              | No — empty allowlist; naming/product decision pending | `unknown`                 | `unknown`         | `unknown`      | Not supported            |
+| Any other or unknown model      | Not in reviewed enum | No                                                    | Not applicable            | Not applicable    | Not applicable | Unsupported; fail closed |
 
 The `APEX` enum/name must not be translated into a consumer-facing model claim
 until Ledger naming, authorization, product intent, and physical evidence are
@@ -73,7 +75,7 @@ reviewed.
 
 The genuine-check, list-installed-apps, and install outputs selected for v0.1
 do not expose firmware metadata. Adding a metadata action only to preflight a
-firmware allowlist would widen the approved action and privacy surface.
+firmware allowlist would widen the reviewed action and privacy surface.
 
 Therefore v0.1 has these rules:
 
@@ -97,16 +99,16 @@ device-action error rather than an explicit unsupported-app or firmware error.
 
 ## Browser policy
 
-| Environment | v0.1 policy | Evidence status | Notes |
-| --- | --- | --- | --- |
-| Current stable Google Chrome desktop | Candidate | `pending` | Exact version, OS, gesture behavior, chooser, and handoff must be recorded. |
-| Current stable Microsoft Edge desktop | Candidate | `pending` | Exact version, OS, gesture behavior, chooser, and handoff must be recorded. |
-| Brave desktop | Evidence-only candidate | `pending` | Do not claim until separately tested and approved. |
-| Firefox desktop | Unsupported | `unsupported` | Required WebHID path is unavailable for this v0.1 design. Existing wallet U2F behavior does not change this. |
-| Safari desktop | Unsupported | `unsupported` | Required WebHID path is unavailable for this v0.1 design. |
-| Mobile browsers | Out of scope | `unsupported` | No mobile support in v0.1. |
-| Electron or embedded webviews | Out of scope | `unsupported` | Package is for a first-party browser application. |
-| Node.js, React Native, or other non-browser runtimes | Out of scope | `unsupported` | Import may be safe for tooling, but the runtime feature is unsupported. |
+| Environment                                          | v0.1 policy             | Evidence status | Notes                                                                                                        |
+| ---------------------------------------------------- | ----------------------- | --------------- | ------------------------------------------------------------------------------------------------------------ |
+| Current stable Google Chrome desktop                 | Candidate               | `pending`       | Exact version, OS, gesture behavior, chooser, and handoff must be recorded.                                  |
+| Current stable Microsoft Edge desktop                | Candidate               | `pending`       | Exact version, OS, gesture behavior, chooser, and handoff must be recorded.                                  |
+| Brave desktop                                        | Evidence-only candidate | `pending`       | Do not claim until separately tested and approved.                                                           |
+| Firefox desktop                                      | Unsupported             | `unsupported`   | Required WebHID path is unavailable for this v0.1 design. Existing wallet U2F behavior does not change this. |
+| Safari desktop                                       | Unsupported             | `unsupported`   | Required WebHID path is unavailable for this v0.1 design.                                                    |
+| Mobile browsers                                      | Out of scope            | `unsupported`   | No mobile support in v0.1.                                                                                   |
+| Electron or embedded webviews                        | Out of scope            | `unsupported`   | Package is for a first-party browser application.                                                            |
+| Node.js, React Native, or other non-browser runtimes | Out of scope            | `unsupported`   | Import may be safe for tooling, but the runtime feature is unsupported.                                      |
 
 Support is capability-based, not user-agent-based. The public probe checks for
 a browser runtime, secure context, and usable WebHID surface. A positive probe
@@ -129,12 +131,12 @@ does not turn an untested browser into a supported one.
 
 No desktop operating-system combination is currently claimed.
 
-| Operating system | Candidate status | Required evidence |
-| --- | --- | --- |
-| macOS | `pending` | Exact OS release, Chrome/Edge release, permissions, install paths, disconnects, close observation, and WebUSB handoff. |
-| Windows | `pending` | Exact OS release, Chrome/Edge release, driver/permission behavior, install paths, disconnects, close observation, and WebUSB handoff. |
-| Linux | `pending` | Exact distribution/kernel/browser, udev/permission prerequisites, install paths, disconnects, close observation, and WebUSB handoff. |
-| Other desktop operating systems | `unknown` | Product, engineering, authorization, and evidence decision required before consideration. |
+| Operating system                | Candidate status | Required evidence                                                                                                                     |
+| ------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS                           | `pending`        | Exact OS release, Chrome/Edge release, permissions, install paths, disconnects, close observation, and WebUSB handoff.                |
+| Windows                         | `pending`        | Exact OS release, Chrome/Edge release, driver/permission behavior, install paths, disconnects, close observation, and WebUSB handoff. |
+| Linux                           | `pending`        | Exact distribution/kernel/browser, udev/permission prerequisites, install paths, disconnects, close observation, and WebUSB handoff.  |
+| Other desktop operating systems | `unknown`        | Product, engineering, authorization, and evidence decision required before consideration.                                             |
 
 Evidence from one browser or operating system does not transfer to another.
 
@@ -150,7 +152,7 @@ paths. A not-applicable result requires reviewer justification.
 - [ ] Cancellation while chooser is open and late chooser resolution.
 - [ ] Locked device and subsequent fresh preparation.
 - [ ] Unknown/unallowlisted model fails closed immediately after connection,
-  with no genuine/list/install action.
+      with no genuine/list/install action.
 - [ ] Allowed model proceeds to genuine device success.
 - [ ] Genuine check refusal/failure and no list or later action.
 - [ ] Bitcoin already installed, with no install or update action.
@@ -167,7 +169,7 @@ paths. A not-applicable result requires reviewer justification.
 - [ ] Physical unplug/replug and repeat operation.
 - [ ] Sleep/wake, permission revocation, and navigation where testable.
 - [ ] No raw inventory, identifier, version, error, or vendor state in public
-  events/results/logs.
+      events/results/logs.
 
 No test may contact Ledger services until the authorization register explicitly
 allows that environment and form of testing.
@@ -178,9 +180,9 @@ Create one row per exact combination. Do not put serial numbers, runtime device
 IDs, session IDs, HID objects, full app inventories, raw errors, tokens, or
 personal data in this table or its attachments.
 
-| Evidence ID | Date | Model | Firmware | Browser/version | OS/version | Prepare | Missing/install/verify | Already installed/no mutation | Refusal | Disconnect/timeout/recovery | HID to WebUSB | Authorization reference | QA review | Security review | Release decision |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Not recorded | Unassigned/pending | Unassigned/pending | Not approved |
+| Evidence ID | Date    | Model   | Firmware | Browser/version | OS/version | Prepare | Missing/install/verify | Already installed/no mutation | Refusal | Disconnect/timeout/recovery | HID to WebUSB | Authorization reference | QA review          | Security review    | Release decision |
+| ----------- | ------- | ------- | -------- | --------------- | ---------- | ------- | ---------------------- | ----------------------------- | ------- | --------------------------- | ------------- | ----------------------- | ------------------ | ------------------ | ---------------- |
+| Pending     | Pending | Pending | Pending  | Pending         | Pending    | Pending | Pending                | Pending                       | Pending | Pending                     | Pending       | Not recorded            | Unassigned/pending | Unassigned/pending | Not approved     |
 
 Evidence attachments should contain the package version/tarball digest, pinned
 dependency versions, mock or live mode, non-sensitive steps, expected versus
@@ -188,20 +190,20 @@ observed result, and sanitized failure classification.
 
 ## Compiled allowlist requirements
 
-The runtime allowlist is implemented in a later phase, not in this policy-only
-phase. Its implementation must:
+The runtime allowlist is implemented as a closed package-owned policy and is
+currently empty. It:
 
-- use a closed package-owned set of exact SDK model identifiers;
-- default to empty/unsupported for unknown values;
-- execute immediately after connection and before genuine check, app listing,
+- uses a closed package-owned set of exact SDK model identifiers;
+- defaults to empty/unsupported for unknown values;
+- executes immediately after connection and before genuine check, app listing,
   or any other management action;
-- be covered by an exhaustive test for every known enum member plus an unknown
+- is covered by an exhaustive test for every known enum member plus an unknown
   value;
-- prevent remote/product configuration from widening the set;
-- avoid returning model identifiers in public events, plans, results, or
+- prevents remote/product configuration from widening the set;
+- does not return model identifiers in public events, plans, results, or
   errors; and
-- change only through reviewed source, acceptance evidence, authorization, and
-  semver process.
+- may change only through reviewed source, acceptance evidence, authorization,
+  and semver process.
 
 The first release's actual entries remain pending. A package must not be made
 public while the approved set is empty or differs from the signed evidence.
@@ -210,28 +212,28 @@ public while the approved set is empty or differs from the signed evidence.
 
 No sign-off is currently recorded.
 
-| Review | Assigned person | Status | Evidence/reference |
-| --- | --- | --- | --- |
-| Product support scope | Unassigned | `pending` | Not recorded |
-| Caravan engineering | Unassigned | `pending` | Not recorded |
-| Security and privacy | Unassigned | `pending` | Not recorded |
-| Ledger relationship/authorization | Unassigned | `pending` | Not recorded |
-| Physical-device QA | Unassigned | `pending` | Not recorded |
-| Release owner | Unassigned | `pending` | Not recorded |
+| Review                            | Assigned person | Status    | Evidence/reference |
+| --------------------------------- | --------------- | --------- | ------------------ |
+| Product support scope             | Unassigned      | `pending` | Not recorded       |
+| Caravan engineering               | Unassigned      | `pending` | Not recorded       |
+| Security and privacy              | Unassigned      | `pending` | Not recorded       |
+| Ledger relationship/authorization | Unassigned      | `pending` | Not recorded       |
+| Physical-device QA                | Unassigned      | `pending` | Not recorded       |
+| Release owner                     | Unassigned      | `pending` | Not recorded       |
 
 ## Release gate
 
 - [ ] Initial compiled allowlist entries match approved evidence exactly.
 - [ ] At least one complete, authorized physical combination is approved for
-  every support claim.
+      every support claim.
 - [ ] Every browser and OS claim has its own current evidence.
 - [ ] Firmware evidence and its runtime limitation are disclosed and accepted.
 - [ ] Unknown model and explicit SDK firmware failure tests fail closed.
 - [ ] Catalog-absence and unrecognized-error mappings match the pinned source.
 - [ ] Resolved SDK artifacts match reviewed immutable source; any version or
-  behavior mismatch has been reconciled and re-reviewed.
+      behavior mismatch has been reconciled and re-reviewed.
 - [ ] Authorization, origins, endpoints, provider, versions, telemetry, and
-  test permissions are approved.
+      test permissions are approved.
 - [ ] WebHID-to-WebUSB evidence includes both ready and reconnect-required paths.
 - [ ] The exact canary artifact passes consumer, security, and physical review.
 - [ ] Every accountable human sign-off is recorded.
@@ -253,6 +255,9 @@ No sign-off is currently recorded.
 - [Public contract v0.1](./public-contract-v0.1.md)
 - [Threat model](./threat-model.md)
 - [Authorization gate](./authorization-gate.md)
+- [Private-readiness evidence](./private-readiness.md)
+- [Physical QA runbook](./physical-qa-runbook.md)
+- [Support runbook](./support-runbook.md)
 - [Ledger DMK legal notice and published versions](https://developers.ledger.com/docs/device-interaction/getting-started)
-- [Ledger WebHID setup guidance](https://developers.ledger.com/docs/device-interaction/dmk-ts/beginner/setup)
-- [Ledger discovery and connection guidance](https://developers.ledger.com/docs/device-interaction/dmk-ts/beginner/discover_and_connect)
+- [Ledger WebHID setup guidance](https://developers.ledger.com/docs/device-interaction/beginner/setup)
+- [Ledger discovery and connection guidance](https://developers.ledger.com/docs/device-interaction/beginner/discover_and_connect)
