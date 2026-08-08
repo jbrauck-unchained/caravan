@@ -23,16 +23,18 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
-    "ci": "npm run lint && npm run typecheck && npm run test && npm run test:package",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run test:private && npm run test:package",
     "dev": "npm run build -- --watch",
-    "lint": "eslint src",
+    "lint": "eslint src \"test/**/*.ts\"",
     "test": "vitest run src",
     "test:artifact": "npm run build && node test/artifact-contract.mjs",
     "test:consumer": "npm run build && node test/consumer/run-webpack5-ts46.mjs",
     "test:import": "npm run build && node test/import-built.mjs",
     "test:package": "npm run build && node test/import-built.mjs && node test/artifact-contract.mjs && node test/consumer/run-webpack5-ts46.mjs",
+    "test:private": "npm run test:handoff",
+    "test:handoff": "vitest run test/handoff",
     "test:watch": "vitest src --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit --project test/tsconfig.json"
   },
   "keywords": [
     "bitcoin",
