@@ -358,9 +358,9 @@ describe("ledger", () => {
   }
 
   function addInteractionMocks(interaction, mockWithApp) {
-    vi
-      .spyOn(interaction, "isAppSupported")
-      .mockReturnValue(Promise.resolve(true));
+    interaction.appName = "Bitcoin";
+    interaction.appVersion = "2.1.0";
+    vi.spyOn(interaction, "isSupported").mockReturnValue(true);
     vi.spyOn(interaction, "withApp").mockImplementation(mockWithApp);
     vi
       .spyOn(interaction, "withTransport")

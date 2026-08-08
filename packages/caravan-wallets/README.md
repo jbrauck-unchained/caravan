@@ -37,6 +37,21 @@ The classes will also provide messages back to the developer suitable
 for display in user interfaces. All errors will also be percolated up
 to the developer to handle how they see fit.
 
+### Ledger transport lifecycle
+
+Each Ledger interaction owns the WebUSB transport it opens (or the U2F
+transport selected for Firefox) and closes that exact transport before the
+operation settles, whether it succeeds or fails. Callers do not need to call
+`closeTransport()` after an interaction; that deprecated compatibility method
+is now a no-op and never opens a device chooser. If an operation and transport
+cleanup both fail, the operation error remains the primary error.
+
+For an optional physical-device smoke check, connect a Ledger through the
+existing browser transport, export a key, sign a representative test
+transaction or PSBT, reject an operation once, then disconnect and retry.
+Record the device model, firmware, browser, operating system, and pass/fail
+result without recording device identifiers.
+
 ### API
 
 The following top-level functions are the entry points to this API:

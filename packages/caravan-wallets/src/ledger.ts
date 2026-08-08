@@ -39,12 +39,8 @@ import {
 } from "@caravan/bitcoin";
 import { LegacyInput } from "@caravan/multisig";
 import { translatePSBT } from "@caravan/psbt";
-import LedgerBtc from "@ledgerhq/hw-app-btc";
-import { getAppAndVersion } from "@ledgerhq/hw-app-btc/lib/getAppAndVersion.js";
 import { serializeTransactionOutputs } from "@ledgerhq/hw-app-btc/lib/serializeTransaction.js";
 import { splitTransaction } from "@ledgerhq/hw-app-btc/lib/splitTransaction.js";
-import TransportU2F from "@ledgerhq/hw-transport-u2f";
-import TransportWebUSB from "@ledgerhq/hw-transport-webusb";
 import { AppClient, PsbtV2 as LedgerPsbtV2 } from "ledger-bitcoin";
 
 import {
@@ -55,6 +51,10 @@ import {
   ERROR,
   DirectKeystoreInteraction,
 } from "./interaction";
+import {
+  getLedgerDependencies,
+  type LedgerTransport,
+} from "./internal/ledgerDependencies";
 import { MultisigWalletPolicy } from "./policy";
 import { DeviceError, MultisigWalletConfig } from "./types";
 
@@ -64,7 +64,6 @@ import { DeviceError, MultisigWalletConfig } from "./types";
 export const LEDGER = "ledger";
 
 export const LEDGER_V2 = "ledger_v2";
-
 
 /**
  * Constant representing the action of pushing the left button on a
@@ -88,6 +87,27 @@ export interface AppAndVersion {
   name: string;
   version: string;
   flags: number | Buffer;
+}
+
+function normalizeTransportCreationError(
+  error: unknown,
+  useU2F: boolean
+): Error {
+  const deviceError = error as DeviceError;
+  let message = deviceError.message;
+
+  if (!useU2F && message === "No device selected.") {
+    message =
+      "Select your device in the WebUSB dialog box. Make sure it's plugged in, unlocked, and has the Bitcoin app open.";
+  } else if (
+    !useU2F &&
+    message ===
+      "undefined is not an object (evaluating 'navigator.usb.getDevices')"
+  ) {
+    message = "Safari is not a supported browser.";
+  }
+
+  return new Error(message);
 }
 
 /**
@@ -170,51 +190,66 @@ export class LedgerInteraction extends DirectKeystoreInteraction {
    * }
    */
   async withTransport(callback: (transport: any) => any) {
-    const useU2F = this.environment.satisfies({
-      firefox: ">70",
-    });
+    const useU2F =
+      this.environment.satisfies({
+        firefox: ">70",
+      }) === true;
+    const dependencies = getLedgerDependencies();
+    let transport: LedgerTransport;
+    try {
+      transport = await (useU2F
+        ? dependencies.createU2FTransport()
+        : dependencies.createWebUSBTransport());
+    } catch (err: unknown) {
+      throw normalizeTransportCreationError(err, useU2F);
+    }
 
-    if (useU2F) {
-      try {
-        const transport = await TransportU2F.create();
-        return callback(transport);
-      } catch (err: unknown) {
-        const e = err as DeviceError;
-        throw new Error(e.message);
-      }
+    let operationResult: any;
+    let operationError: unknown;
+    let operationFailed = false;
+    try {
+      operationResult = await callback(transport);
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
     }
 
     try {
-      const transport = await TransportWebUSB.create();
-      return callback(transport);
-    } catch (err: unknown) {
-      const e = err as DeviceError;
-      if (e.message) {
-        if (e.message === "No device selected.") {
-          e.message = `Select your device in the WebUSB dialog box. Make sure it's plugged in, unlocked, and has the Bitcoin app open.`;
-        }
-        if (
-          e.message ===
-          "undefined is not an object (evaluating 'navigator.usb.getDevices')"
-        ) {
-          e.message = `Safari is not a supported browser.`;
-        }
-      }
-      throw new Error(e.message);
+      await transport.close();
+    } catch (closeError) {
+      // A cleanup failure must not replace the operation's primary error.
+      if (!operationFailed) throw closeError;
     }
+
+    if (operationFailed) throw operationError;
+    return operationResult;
+  }
+
+  private async setAppVersionWithTransport(
+    transport: LedgerTransport
+  ): Promise<string> {
+    const response: AppAndVersion =
+      await getLedgerDependencies().getAppConfiguration(transport);
+    this.appVersion = response.version;
+    this.appName = response.name;
+    return this.appVersion;
   }
 
   setAppVersion(): Promise<string> {
-    return this.withTransport(async (transport) => {
-      const response: AppAndVersion = await getAppAndVersion(transport);
-      this.appVersion = response.version;
-      this.appName = response.name;
-      return this.appVersion;
-    });
+    return this.withTransport((transport) =>
+      this.setAppVersionWithTransport(transport)
+    );
   }
 
-  async isLegacyApp(): Promise<boolean> {
-    const version = await this.setAppVersion();
+  private async isLegacyAppWithTransport(
+    transport: LedgerTransport
+  ): Promise<boolean> {
+    await this.setAppVersionWithTransport(transport);
+    return this.isCurrentAppLegacy();
+  }
+
+  protected isCurrentAppLegacy(): boolean {
+    const version = this.appVersion ?? "";
     const [majorVersion, minorVersion] = version.split(".");
     // if the name includes "Legacy" then it is legacy app
     if (this.appName && Boolean(this.appName.includes("Legacy"))) return true;
@@ -222,6 +257,12 @@ export class LedgerInteraction extends DirectKeystoreInteraction {
     return (
       Number(majorVersion) <= 1 ||
       (Number(majorVersion) == 2 && Number(minorVersion) < 1)
+    );
+  }
+
+  isLegacyApp(): Promise<boolean> {
+    return this.withTransport((transport) =>
+      this.isLegacyAppWithTransport(transport)
     );
   }
 
@@ -244,32 +285,22 @@ export class LedgerInteraction extends DirectKeystoreInteraction {
    */
   withApp(callback: (app: any, transport: any) => any) {
     return this.withTransport(async (transport) => {
-      let app;
-      if (await this.isLegacyApp()) {
-        app = new LedgerBtc(transport);
-      } else {
-        app = new AppClient(transport);
-      }
+      const isLegacy = await this.isLegacyAppWithTransport(transport);
+      const dependencies = getLedgerDependencies();
+      const app = isLegacy
+        ? dependencies.createLegacyApp(transport)
+        : dependencies.createModernApp(transport);
       return callback(app, transport);
     });
   }
 
   /**
-   * Close the Transport to free the interface (E.g. could be used in another tab
-   * now that the interaction is over)
-   *
-   * The way the pubkey/xpub/fingerprints are grabbed makes this a little tricky.
-   * Instead of re-writing how that works, let's just add a way to explicitly
-   * close the transport.
+   * @deprecated Ledger operations now close the transport they create before
+   * returning. This compatibility method is intentionally a no-op: opening a
+   * new chooser cannot close a transport from an earlier operation.
    */
-  closeTransport() {
-    return this.withTransport(async (transport) => {
-      try {
-        await transport.close();
-      } catch (err) {
-        console.error(err);
-      }
-    });
+  closeTransport(): Promise<void> {
+    return Promise.resolve();
   }
 }
 
@@ -318,6 +349,20 @@ export abstract class LedgerBitcoinInteraction extends LedgerInteraction {
    */
   abstract isV2Supported: boolean;
 
+  protected isAppVersionSupported(isLegacy: boolean): boolean {
+    if (!this.isSupported()) return false;
+    return isLegacy ? this.isLegacySupported : this.isV2Supported;
+  }
+
+  protected assertAppVersionSupported(isLegacy: boolean): true {
+    if (!this.isAppVersionSupported(isLegacy)) {
+      throw new Error(
+        `Method not supported for this version of Ledger app (${this.appVersion})`
+      );
+    }
+    return true;
+  }
+
   /**
    * Adds `pending` and `active` messages at the `info` level urging
    * the user to be in the bitcoin app (`ledger.app.bitcoin`).
@@ -348,10 +393,7 @@ export abstract class LedgerBitcoinInteraction extends LedgerInteraction {
    */
   async isAppSupported() {
     if (!this.isSupported()) return false;
-    if (await this.isLegacyApp()) {
-      return this.isLegacySupported;
-    }
-    return this.isV2Supported;
+    return this.isAppVersionSupported(await this.isLegacyApp());
   }
 
   /**
@@ -362,13 +404,9 @@ export abstract class LedgerBitcoinInteraction extends LedgerInteraction {
    * The return type has to remain any to get inheritance typing to work.
    */
   async run(): Promise<any> {
-    const isSupported = await this.isAppSupported();
-    if (!isSupported) {
-      throw new Error(
-        `Method not supported for this version of Ledger app (${this.appVersion})`
-      );
-    }
-    return isSupported;
+    if (!this.isSupported()) return this.assertAppVersionSupported(false);
+    const isLegacy = await this.isLegacyApp();
+    return this.assertAppVersionSupported(isLegacy);
   }
 }
 
@@ -404,13 +442,9 @@ export class LedgerGetMetadata extends LedgerDashboardInteraction {
 
   async run() {
     return this.withTransport(async (transport) => {
-      try {
-        transport.setScrambleKey("B0L0S");
-        const rawResult = await transport.send(0xe0, 0x01, 0x00, 0x00);
-        return this.parseMetadata(rawResult);
-      } finally {
-        await super.closeTransport();
-      }
+      transport.setScrambleKey("B0L0S");
+      const rawResult = await transport.send(0xe0, 0x01, 0x00, 0x00);
+      return this.parseMetadata(rawResult);
     });
   }
 
@@ -677,16 +711,20 @@ abstract class LedgerExportHDNode extends LedgerBitcoinInteraction {
    * Optionally get root fingerprint for device. This is useful for keychecks and necessary
    * for PSBTs
    */
-  async getFingerprint(root = false): Promise<number | string> {
-    if (await this.isLegacyApp()) {
+  protected async getFingerprintWithApp(
+    app: any,
+    isLegacy: boolean,
+    root = false
+  ): Promise<number | string> {
+    if (isLegacy) {
       const pubkey = root
-        ? await this.getMultisigRootPublicKey()
-        : await this.getParentPublicKey();
+        ? await this.getMultisigRootPublicKeyWithApp(app)
+        : await this.getParentPublicKeyWithApp(app);
       let fp = getFingerprintFromPublicKey(pubkey);
       // If asked for a root XFP, zero pad it to length of 8.
       return root ? fingerprintToFixedLengthHex(fp) : fp.toString();
     } else if (root) {
-      return this.getXfp();
+      return this.getXfpWithApp(app, isLegacy);
     } else {
       throw new Error(
         `Method not supported for this version of Ledger app (${this.appVersion})`
@@ -694,42 +732,58 @@ abstract class LedgerExportHDNode extends LedgerBitcoinInteraction {
     }
   }
 
+  getFingerprint(root = false): Promise<number | string> {
+    return this.withApp((app) =>
+      this.getFingerprintWithApp(app, this.isCurrentAppLegacy(), root)
+    );
+  }
+
   // v2 App and above only
-  async getXfp() {
-    if (await this.isLegacyApp()) {
-      return this.getFingerprint(true);
+  protected async getXfpWithApp(app: any, isLegacy: boolean) {
+    if (isLegacy) {
+      return this.getFingerprintWithApp(app, isLegacy, true);
     }
 
-    return this.withApp(async (app) => {
-      return await app.getMasterFingerprint();
-    });
+    return app.getMasterFingerprint();
+  }
+
+  getXfp() {
+    return this.withApp((app) =>
+      this.getXfpWithApp(app, this.isCurrentAppLegacy())
+    );
+  }
+
+  protected async getParentPublicKeyWithApp(app: any) {
+    const parentPath = getParentBIP32Path(this.bip32Path);
+    const key = (await app.getWalletPublicKey(parentPath)).publicKey;
+    return key;
   }
 
   getParentPublicKey() {
-    return this.withApp(async (app) => {
-      const parentPath = getParentBIP32Path(this.bip32Path);
-      const key = (await app.getWalletPublicKey(parentPath)).publicKey;
-      return key;
-    });
+    return this.withApp((app) => this.getParentPublicKeyWithApp(app));
+  }
+
+  protected async getMultisigRootPublicKeyWithApp(app: any) {
+    return (await app.getWalletPublicKey()).publicKey;
   }
 
   getMultisigRootPublicKey() {
-    return this.withApp(async (app) => {
-      const key = (await app.getWalletPublicKey()).publicKey; // Call getWalletPublicKey w no path to get BIP32_ROOT (m)
-      return key;
-    });
+    return this.withApp((app) => this.getMultisigRootPublicKeyWithApp(app));
+  }
+
+  protected async runWithApp(app: any, isLegacy: boolean) {
+    this.assertAppVersionSupported(isLegacy);
+    // only supported by legacy app
+    return app.getWalletPublicKey(this.bip32Path);
   }
 
   /**
    * See {@link https://github.com/LedgerHQ/ledgerjs/tree/master/packages/hw-app-btc#getwalletpublickey}.
    */
   run() {
-    return this.withApp(async (app) => {
-      await super.run();
-      // only supported by legacy app
-      const result = await app.getWalletPublicKey(this.bip32Path);
-      return result;
-    });
+    return this.withApp((app) =>
+      this.runWithApp(app, this.isCurrentAppLegacy())
+    );
   }
 }
 
@@ -759,11 +813,13 @@ export class LedgerExportPublicKey extends LedgerExportHDNode {
     this.includeXFP = includeXFP;
   }
 
+  protected async getV2PublicKeyWithApp(app: any) {
+    const xpub = await app.getExtendedPubkey(this.bip32Path, true);
+    return ExtendedPublicKey.fromBase58(xpub).pubkey;
+  }
+
   getV2PublicKey() {
-    return this.withApp(async (app) => {
-      const xpub = await app.getExtendedPubkey(this.bip32Path, true);
-      return ExtendedPublicKey.fromBase58(xpub).pubkey;
-    });
+    return this.withApp((app) => this.getV2PublicKeyWithApp(app));
   }
 
   /**
@@ -771,12 +827,13 @@ export class LedgerExportPublicKey extends LedgerExportHDNode {
    * `LedgerExportHDNode`.
    */
   async run() {
-    try {
-      if (await this.isLegacyApp()) {
-        const result = await super.run();
+    return this.withApp(async (app) => {
+      const isLegacy = this.isCurrentAppLegacy();
+      if (isLegacy) {
+        const result = await this.runWithApp(app, isLegacy);
         const publicKey = this.parsePublicKey((result || {}).publicKey);
         if (this.includeXFP) {
-          let rootFingerprint = await this.getXfp();
+          const rootFingerprint = await this.getXfpWithApp(app, isLegacy);
           return {
             rootFingerprint,
             publicKey,
@@ -785,15 +842,13 @@ export class LedgerExportPublicKey extends LedgerExportHDNode {
 
         return publicKey;
       }
-      const publicKey = await this.getV2PublicKey();
+      const publicKey = await this.getV2PublicKeyWithApp(app);
       if (this.includeXFP) {
-        let rootFingerprint = await this.getXfp();
+        const rootFingerprint = await this.getXfpWithApp(app, isLegacy);
         return { rootFingerprint, publicKey };
       }
       return publicKey;
-    } finally {
-      await super.closeTransport();
-    }
+    });
   }
 
   /**
@@ -849,10 +904,11 @@ export class LedgerExportExtendedPublicKey extends LedgerExportHDNode {
    * console.log(xpub);
    */
   async run() {
-    try {
-      if (await this.isLegacyApp()) {
-        const walletPublicKey = await super.run();
-        const fingerprint = await this.getFingerprint();
+    return this.withApp(async (app) => {
+      const isLegacy = this.isCurrentAppLegacy();
+      if (isLegacy) {
+        const walletPublicKey = await this.runWithApp(app, isLegacy);
+        const fingerprint = await this.getFingerprintWithApp(app, isLegacy);
         const xpub = deriveExtendedPublicKey(
           this.bip32Path,
           walletPublicKey.publicKey,
@@ -862,7 +918,7 @@ export class LedgerExportExtendedPublicKey extends LedgerExportHDNode {
         );
 
         if (this.includeXFP) {
-          const rootFingerprint = await this.getXfp();
+          const rootFingerprint = await this.getXfpWithApp(app, isLegacy);
           return {
             rootFingerprint,
             xpub,
@@ -870,15 +926,11 @@ export class LedgerExportExtendedPublicKey extends LedgerExportHDNode {
         }
         return xpub;
       } else {
-        const rootFingerprint = await this.getXfp();
-        const xpub = await this.withApp(async (app) => {
-          return app.getExtendedPubkey(this.bip32Path, true);
-        });
+        const rootFingerprint = await this.getXfpWithApp(app, isLegacy);
+        const xpub = await app.getExtendedPubkey(this.bip32Path, true);
         return { xpub, rootFingerprint };
       }
-    } finally {
-      await super.closeTransport();
-    }
+    });
   }
 }
 
@@ -1139,21 +1191,23 @@ export class LedgerSignMultisigTransaction extends LedgerBitcoinInteraction {
    * byte.
    */
   async run() {
-    // will check app support and throw error if not supported
+    let supportCheckComplete = false;
     try {
-      await super.run();
-    } catch (e) {
-      // in order to support backwards compatibility, if it's not supported
-      // we'll try and run with v2 options instead
-      if (!this.v2Options || !Object.keys(this.v2Options)) {
-        throw e;
-      }
-      const interaction = new LedgerV2SignMultisigTransaction(this.v2Options);
-      return interaction.run();
-    }
+      if (!this.isSupported()) this.assertAppVersionSupported(false);
 
-    return this.withApp(async (app, transport) => {
-      try {
+      return await this.withTransport(async (transport) => {
+        const dependencies = getLedgerDependencies();
+        const response = await dependencies.getAppConfiguration(transport);
+        this.appVersion = response.version;
+        this.appName = response.name;
+        const isLegacy = this.isCurrentAppLegacy();
+        this.assertAppVersionSupported(isLegacy);
+        supportCheckComplete = true;
+
+        const app: any = isLegacy
+          ? dependencies.createLegacyApp(transport)
+          : dependencies.createModernApp(transport);
+
         // FIXME: Explain the rationale behind this choice.
         transport.setExchangeTimeout(20000 * this.outputs.length);
         const transactionSignature = await app.signP2SHTransaction({
@@ -1174,13 +1228,20 @@ export class LedgerSignMultisigTransaction extends LedgerBitcoinInteraction {
             this.pubkeys,
             this.parseSignature(transactionSignature, "buffer")
           );
-        } else {
-          return this.parseSignature(transactionSignature, "hex");
         }
-      } finally {
-        transport.close();
+        return this.parseSignature(transactionSignature, "hex");
+      });
+    } catch (error) {
+      if (supportCheckComplete) throw error;
+
+      // in order to support backwards compatibility, if it's not supported
+      // we'll try and run with v2 options instead
+      if (!this.v2Options || !Object.keys(this.v2Options)) {
+        throw error;
       }
-    });
+      const interaction = new LedgerV2SignMultisigTransaction(this.v2Options);
+      return interaction.run();
+    }
   }
 
   ledgerInputs() {
@@ -1285,20 +1346,16 @@ export class LedgerSignMessage extends LedgerBitcoinInteraction {
    * See {@link https://github.com/LedgerHQ/ledger-live/tree/develop/libs/ledgerjs/packages/hw-app-btc#signmessagenew}.
    */
   async run() {
-    // check app version support first
-    await super.run();
+    if (!this.isSupported()) this.assertAppVersionSupported(false);
+
     return this.withApp(async (app, transport) => {
-      try {
-        // TODO: what would be an appropriate amount of time to wait for a
-        // signature?
-        transport.setExchangeTimeout(20000);
+      const isLegacy = this.isCurrentAppLegacy();
+      this.assertAppVersionSupported(isLegacy);
+      // TODO: what would be an appropriate amount of time to wait for a
+      // signature?
+      transport.setExchangeTimeout(20000);
 
-        const vrs = await app.signMessageNew(this.bip32Path, this.message);
-
-        return vrs;
-      } finally {
-        transport.close();
-      }
+      return app.signMessageNew(this.bip32Path, this.message);
     });
   }
 }
@@ -1365,38 +1422,49 @@ export abstract class LedgerBitcoinV2WithRegistrationInteraction extends LedgerB
     this.policyHmac = Buffer.from(policyHmac, "hex");
   }
 
-  async getXfp(): Promise<string> {
-    return this.withApp(async (app: AppClient) => {
-      return app.getMasterFingerprint();
-    });
+  protected getXfpWithApp(app: AppClient): Promise<string> {
+    return app.getMasterFingerprint();
   }
 
-  async registerWallet(verify = false): Promise<Buffer> {
+  getXfp(): Promise<string> {
+    return this.withApp((app: AppClient) => this.getXfpWithApp(app));
+  }
+
+  protected async registerWalletWithApp(
+    app: AppClient,
+    verify = false
+  ): Promise<Buffer> {
     if (this.policyHmac && !verify) return Promise.resolve(this.policyHmac);
 
     // if we don't have a registered policy yet, then let's handle that
-    return this.withApp(async (app: AppClient) => {
-      const policy = this.walletPolicy.toLedgerPolicy();
-      const [policyId, policyHmac] = await app.registerWallet(policy);
-      const buff = Buffer.from(policyHmac);
+    const policy = this.walletPolicy.toLedgerPolicy();
+    const [policyId, policyHmac] = await app.registerWallet(policy);
+    const buff = Buffer.from(policyHmac);
 
-      if (
-        verify &&
-        this.policyHmac &&
-        this.policyHmac.toString("hex") !== buff.toString("hex")
-      ) {
-        console.error(
-          `Policy registrations did not match. Expected ${this.policyHmac.toString(
-            "hex"
-          )}; Actual: ${buff.toString("hex")}`
-        );
-      }
+    if (
+      verify &&
+      this.policyHmac &&
+      this.policyHmac.toString("hex") !== buff.toString("hex")
+    ) {
+      console.error(
+        `Policy registrations did not match. Expected ${this.policyHmac.toString(
+          "hex"
+        )}; Actual: ${buff.toString("hex")}`
+      );
+    }
 
-      this.policyHmac = buff;
-      this.policyId = policyId;
+    this.policyHmac = buff;
+    this.policyId = policyId;
 
-      return buff;
-    });
+    return buff;
+  }
+
+  registerWallet(verify = false): Promise<Buffer> {
+    if (this.policyHmac && !verify) return Promise.resolve(this.policyHmac);
+
+    return this.withApp((app: AppClient) =>
+      this.registerWalletWithApp(app, verify)
+    );
   }
 }
 
@@ -1450,13 +1518,14 @@ export class LedgerRegisterWalletPolicy extends LedgerBitcoinV2WithRegistrationI
   }
 
   async run() {
-    try {
-      await super.run();
-      const policy = await this.registerWallet(this.verify);
+    if (!this.isSupported()) this.assertAppVersionSupported(false);
+
+    return this.withApp(async (app: AppClient) => {
+      const isLegacy = this.isCurrentAppLegacy();
+      this.assertAppVersionSupported(isLegacy);
+      const policy = await this.registerWalletWithApp(app, this.verify);
       return Buffer.from(policy).toString("hex");
-    } finally {
-      await super.closeTransport();
-    }
+    });
   }
 }
 
@@ -1554,35 +1623,36 @@ export class LedgerConfirmMultisigAddress extends LedgerBitcoinV2WithRegistratio
     return messages;
   }
 
+  protected getAddressWithApp(app: AppClient): Promise<string> {
+    // make sure wallet is registered or has an hmac
+    // before calling this method
+    if (!this.POLICY_HMAC) {
+      throw new Error("Can't get wallet address without a wallet registration");
+    }
+    return app.getWalletAddress(
+      this.walletPolicy.toLedgerPolicy(),
+      Buffer.from(this.POLICY_HMAC, "hex"),
+      this.braidIndex,
+      this.addressIndex,
+      this.display
+    );
+  }
+
   getAddress(): Promise<string> {
-    return this.withApp(async (app: AppClient) => {
-      // make sure wallet is registered or has an hmac
-      // before calling this method
-      if (!this.POLICY_HMAC) {
-        throw new Error(
-          "Can't get wallet address without a wallet registration"
-        );
-      }
-      return app.getWalletAddress(
-        this.walletPolicy.toLedgerPolicy(),
-        Buffer.from(this.POLICY_HMAC, "hex"),
-        this.braidIndex,
-        this.addressIndex,
-        this.display
-      );
-    });
+    return this.withApp((app: AppClient) => this.getAddressWithApp(app));
   }
 
   async run() {
-    try {
+    if (!this.isSupported()) this.assertAppVersionSupported(false);
+
+    return this.withApp(async (app: AppClient) => {
+      const isLegacy = this.isCurrentAppLegacy();
       // run the app version support checks, register wallet if necessary
-      await super.run();
-      await this.registerWallet();
+      this.assertAppVersionSupported(isLegacy);
+      await this.registerWalletWithApp(app);
       // TODO doesn't handle catching error where policy doesn't match well
-      return await this.getAddress();
-    } finally {
-      await super.closeTransport();
-    }
+      return this.getAddressWithApp(app);
+    });
   }
 }
 
@@ -1647,19 +1717,21 @@ export class LedgerV2SignMultisigTransaction extends LedgerBitcoinV2WithRegistra
     }
   }
 
-  async signPsbt(): Promise<LedgerSignatures[]> {
-    return this.withApp(async (app: AppClient) => {
-      const ledgerPsbt = new LedgerPsbtV2();
-      ledgerPsbt.deserialize(
-        Buffer.from(this.psbt.serialize("base64"), "base64")
-      );
-      this.signatures = await app.signPsbt(
-        ledgerPsbt,
-        this.walletPolicy.toLedgerPolicy(),
-        Buffer.from(this.POLICY_HMAC, "hex") || null,
-        this.progressCallback
-      );
-    });
+  protected async signPsbtWithApp(app: AppClient): Promise<void> {
+    const ledgerPsbt = new LedgerPsbtV2();
+    ledgerPsbt.deserialize(
+      Buffer.from(this.psbt.serialize("base64"), "base64")
+    );
+    this.signatures = await app.signPsbt(
+      ledgerPsbt,
+      this.walletPolicy.toLedgerPolicy(),
+      Buffer.from(this.POLICY_HMAC, "hex") || null,
+      this.progressCallback
+    );
+  }
+
+  signPsbt(): Promise<LedgerSignatures[]> {
+    return this.withApp((app: AppClient) => this.signPsbtWithApp(app));
   }
 
   get SIGNATURES() {
@@ -1680,15 +1752,16 @@ export class LedgerV2SignMultisigTransaction extends LedgerBitcoinV2WithRegistra
   }
 
   async run() {
-    try {
+    if (!this.isSupported()) this.assertAppVersionSupported(false);
+
+    return this.withApp(async (app: AppClient) => {
+      const isLegacy = this.isCurrentAppLegacy();
       // run the app version support checks, register wallet if necessary
-      await super.run();
-      await this.registerWallet();
-      await this.signPsbt();
+      this.assertAppVersionSupported(isLegacy);
+      await this.registerWalletWithApp(app);
+      await this.signPsbtWithApp(app);
       if (this.returnSignatureArray) return this.SIGNATURES;
       return this.SIGNED_PSTBT;
-    } finally {
-      await super.closeTransport();
-    }
+    });
   }
 }
