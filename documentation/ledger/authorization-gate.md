@@ -5,7 +5,7 @@
 **Not approved for live Ledger backend use or release.**
 
 - Overall status: `unknown`
-- Last reviewed: 2026-08-07
+- Last reviewed: 2026-08-08
 - Written Ledger agreement: Not recorded
 - Production origins: Not recorded
 - Approved provider and endpoints: Not recorded
@@ -29,59 +29,59 @@ Allowed status values are `unknown`, `requested`, `approved`, `rejected`, and
 
 ## Accountable roles
 
-| Role | Assigned person | Status | Responsibility |
-| --- | --- | --- | --- |
-| Ledger relationship owner | Unassigned | `unknown` | Obtain and maintain Ledger's written authorization and partner configuration. |
-| Caravan release owner | Unassigned | `unknown` | Verify the evidence packet and prevent unauthorized package publication. |
-| Security reviewer | Unassigned | `unknown` | Approve authority, endpoint, privacy, telemetry, and revocation controls. |
-| Incident contact | Unassigned | `unknown` | Coordinate disablement and notification for authorization or service incidents. |
-| Physical-device QA owner | Unassigned | `unknown` | Control live-device execution and attach non-identifying acceptance evidence. |
+| Role                      | Assigned person | Status    | Responsibility                                                                  |
+| ------------------------- | --------------- | --------- | ------------------------------------------------------------------------------- |
+| Ledger relationship owner | Unassigned      | `unknown` | Obtain and maintain Ledger's written authorization and partner configuration.   |
+| Caravan release owner     | Unassigned      | `unknown` | Verify the evidence packet and prevent unauthorized package publication.        |
+| Security reviewer         | Unassigned      | `unknown` | Approve authority, endpoint, privacy, telemetry, and revocation controls.       |
+| Incident contact          | Unassigned      | `unknown` | Coordinate disablement and notification for authorization or service incidents. |
+| Physical-device QA owner  | Unassigned      | `unknown` | Control live-device execution and attach non-identifying acceptance evidence.   |
 
 Role assignment is itself a release prerequisite. A role label is not evidence
 that a person has accepted the responsibility.
 
 ## Agreement evidence
 
-| Required fact | Status | Controlled evidence reference | Recorded value or constraint |
-| --- | --- | --- | --- |
-| Ledger agreement identifier | `unknown` | Not recorded | Not recorded |
-| Agreement effective date | `unknown` | Not recorded | Not recorded |
-| Agreement expiry or renewal date | `unknown` | Not recorded | Not recorded |
-| Authorizing Ledger entity/contact | `unknown` | Not recorded | Not recorded |
-| Authorized Caravan/consumer entity | `unknown` | Not recorded | Not recorded |
-| Approved development environments | `unknown` | Not recorded | Not recorded |
-| Approved staging environments | `unknown` | Not recorded | Not recorded |
-| Approved production environments | `unknown` | Not recorded | Not recorded |
-| Approved production origins/domains | `unknown` | Not recorded | Not recorded |
-| Approved non-production origins/domains | `unknown` | Not recorded | Not recorded |
-| Approved device-management actions | `unknown` | Not recorded | Must be no broader than genuine check, list installed apps, install official Bitcoin, and open Bitcoin. |
-| Approved SDK versions or version policy | `unknown` | Not recorded | Proposed runtime pins are DMK `1.7.1`, WebHID transport `1.2.4`, and RxJS `7.8.2`; this is not approval or artifact evidence. |
-| Reviewed SDK source/artifact identity | `unknown` | Not recorded | Record immutable source and packed-artifact integrity; a matching version string alone is insufficient. |
-| Approved Manager API base URL | `unknown` | Not recorded | Not recorded |
-| Approved ScriptRunner WebSocket URL | `unknown` | Not recorded | Not recorded |
-| Approved provider identifier | `unknown` | Not recorded | Not recorded |
-| Authentication/token requirements | `unknown` | Not recorded | No browser secret may be embedded. A client-secret requirement blocks this architecture. |
-| Traffic limits and rate policy | `unknown` | Not recorded | Not recorded |
-| Branding and user-notice requirements | `unknown` | Not recorded | Not recorded |
-| Support/escalation obligations | `unknown` | Not recorded | Not recorded |
-| Automated backend testing permission | `unknown` | Not recorded | Not recorded |
-| Live physical-device testing permission | `unknown` | Not recorded | Not recorded |
-| Production monitoring requirements | `unknown` | Not recorded | Not recorded |
-| Incident-notification requirements | `unknown` | Not recorded | Not recorded |
-| Vendor telemetry/error-capture acceptance | `unknown` | Not recorded | Must explicitly cover packaged WebHID behavior. |
-| Data-retention or privacy restrictions | `unknown` | Not recorded | Not recorded |
-| Revocation and emergency-disable procedure | `unknown` | Not recorded | Not recorded |
+| Required fact                              | Status    | Controlled evidence reference | Recorded value or constraint                                                                                                                                               |
+| ------------------------------------------ | --------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ledger agreement identifier                | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Agreement effective date                   | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Agreement expiry or renewal date           | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Authorizing Ledger entity/contact          | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Authorized Caravan/consumer entity         | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved development environments          | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved staging environments              | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved production environments           | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved production origins/domains        | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved non-production origins/domains    | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved device-management actions         | `unknown` | Not recorded                  | Must be no broader than genuine check, list installed apps, install official Bitcoin, and open Bitcoin.                                                                    |
+| Approved SDK versions or version policy    | `unknown` | Not recorded                  | Proposed runtime pins are DMK `1.7.1`, WebHID transport `1.2.4`, and RxJS `7.8.2`; this is not approval or artifact evidence.                                              |
+| Reviewed SDK source/artifact identity      | `unknown` | Not recorded                  | Record immutable source and packed-artifact integrity; a matching version string alone is insufficient.                                                                    |
+| Approved Manager API base URL              | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved ScriptRunner WebSocket URL        | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Approved provider identifier               | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Authentication/token requirements          | `unknown` | Not recorded                  | No browser secret may be embedded. A client-secret requirement blocks this architecture.                                                                                   |
+| Traffic limits and rate policy             | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Branding and user-notice requirements      | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Support/escalation obligations             | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Automated backend testing permission       | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Live physical-device testing permission    | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Production monitoring requirements         | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Incident-notification requirements         | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Vendor telemetry/error-capture acceptance  | `unknown` | Not recorded                  | Local resolved-runtime evidence shows duplicate host-Hub capture of a wrapper retaining the raw browser error; packed host-client behavior and acceptance remain blocking. |
+| Data-retention or privacy restrictions     | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
+| Revocation and emergency-disable procedure | `unknown` | Not recorded                  | Not recorded                                                                                                                                                               |
 
 ## Observed SDK defaults are not permission
 
 The local reviewed source baseline, whose manifest currently reports DMK
 `1.7.1`, contains these defaults:
 
-| Setting | Observed source value | Authorization status |
-| --- | --- | --- |
-| Manager API | `https://manager.api.live.ledger.com/api` | `unknown` |
-| ScriptRunner WebSocket | `wss://scriptrunner.api.live.ledger.com/update` | `unknown` |
-| Provider | `1` | `unknown` |
+| Setting                | Observed source value                           | Authorization status |
+| ---------------------- | ----------------------------------------------- | -------------------- |
+| Manager API            | `https://manager.api.live.ledger.com/api`       | `unknown`            |
+| ScriptRunner WebSocket | `wss://scriptrunner.api.live.ledger.com/update` | `unknown`            |
+| Provider               | `1`                                             | `unknown`            |
 
 These values document dependency behavior only. They must not be interpreted as
 Ledger approval, copied into a public configuration API, or contacted during
@@ -100,23 +100,43 @@ traffic or grant new device-management authority.
 
 ## Privacy and telemetry evidence
 
-The reviewed WebHID transport source imports `@sentry/minimal` and invokes
-`captureException` on selected transport failures. Caravan will not initialize
-a console logger, analytics client, or error-reporting destination in
-`@caravan/ledger`, but the packaged transitive behavior still requires review.
+The installed WebHID transport `1.2.4` imports `@sentry/minimal` `6.19.7` and
+invokes `captureException` on selected transport failures. The deterministic
+[vendor-Sentry characterization](../../packages/caravan-ledger/test/privacy/vendor-sentry.test.ts)
+uses the exported transport path and the real current-Hub call. A rejected
+`requestDevice()` is wrapped once and passed to the host Hub twice. The wrapper
+has `_tag`, `err`, and `originalError` own fields, with the latter two aliasing
+the raw browser `Error` and all data attached to it.
+
+In the controlled test, the isolated host Hub has no client. Its real capture
+method causes no observed fetch, WebSocket, XHR, beacon, console, or storage
+access. That distinguishes capture invocation from transmission; it does not
+predict serialization or transport when a consumer has configured a Sentry
+client or integrations, and it is not native-browser evidence. Current Caravan
+source initializes no console logger, analytics client, Sentry client, or
+error-reporting destination, but the transitive host-Hub behavior remains a
+release blocker.
 
 Before approval, attach evidence for all of the following without including
 secrets or device identifiers in git:
 
-- [ ] Determine whether `@sentry/minimal` sends any data without consumer
-  initialization in the exact packed dependency graph.
-- [ ] Inventory the data supplied to vendor capture calls.
+- [ ] Repeat the authoring-tree no-client observation of the real Hub method
+      under fetch/WebSocket/XHR/beacon/console/storage tripwires on the exact final
+      packed browser artifact. The current source test observes no such side
+      effect.
+- [ ] Reconfirm on the exact final dependency graph the current source-test
+      inventory of the `requestDevice()` rejection object, duplicate capture, and
+      both raw-error aliases.
+- [ ] With the exact final consumer bundle and representative approved host
+      Sentry client/integrations, record serialization, sampling, destination,
+      retention, and whether every planted field can transmit.
 - [ ] Confirm the behavior is allowed by the Ledger agreement and applicable
-  consumer privacy policy.
+      consumer privacy policy.
 - [ ] Record whether tree shaking or another supported configuration changes
-  the behavior without breaking required dependency side effects.
-- [ ] Confirm no Caravan logger, analytics, or additional network destination
-  is initialized by the package.
+      the behavior without breaking required dependency side effects.
+- [ ] Confirm on the exact final packed consumer that Caravan calls no SDK
+      logger hook and adds no analytics, Sentry client, or destination. Current
+      source tests cover the builder logger hook and exercised no-client paths.
 - [ ] Record the security review decision and controlled evidence reference.
 
 ## Live-use release gate
@@ -126,23 +146,23 @@ exercise. An unchecked item is blocking.
 
 - [ ] All accountable roles are assigned and have accepted responsibility.
 - [ ] A formal written agreement is effective and its controlled identifier is
-  recorded.
+      recorded.
 - [ ] Allowed actions explicitly include the complete proposed flow.
 - [ ] Every origin and environment that will contact Ledger is approved.
 - [ ] SDK versions and all endpoint/provider values are approved.
 - [ ] Resolved SDK artifacts match the reviewed immutable source and recorded
-  integrity evidence; no version or behavior mismatch remains.
+      integrity evidence; no version or behavior mismatch remains.
 - [ ] The architecture does not require a browser-embedded secret. If it does,
-  work is stopped and redesigned with Ledger and security.
+      work is stopped and redesigned with Ledger and security.
 - [ ] Automated and physical-device test permissions are recorded separately.
 - [ ] Traffic, privacy, telemetry, branding, support, monitoring, and incident
-  requirements are recorded and implemented.
+      requirements are recorded and implemented.
 - [ ] The compiled device-model policy is no wider than the agreement and the
-  completed physical evidence in the [support matrix](./support-matrix.md).
+      completed physical evidence in the [support matrix](./support-matrix.md).
 - [ ] Security has approved the packed dependency and network-destination audit.
 - [ ] The release owner has reviewed the exact package tarball and configuration.
 - [ ] Product, engineering, security, QA, and release sign-offs are attached by
-  accountable humans.
+      accountable humans.
 
 ## Renewal, expiry, rejection, and revocation
 

@@ -90,13 +90,13 @@ workflow declaration.
 
 ## Privacy and network gate
 
-| Requirement                                              | Status                        | Blocker                                                                                                                                                           |
-| -------------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Caravan-owned public redaction/forbidden surfaces        | `pending` final artifact      | Repeat canary tests across events, results, errors, console, storage, and packed declarations.                                                                    |
-| Vendor WebHID `@sentry/minimal` behavior                 | `blocked-external`            | Empirically characterize the exact consumer bundle, payload fields, hub/destination behavior, and mitigation; obtain security/privacy and authorization approval. |
-| Exact Ledger HTTPS/WSS/provider/origin/CSP configuration | `blocked-external`            | Written authorization and controlled production configuration are absent. Observed SDK defaults are not permission.                                               |
-| Browser secret                                           | `verified-static` design rule | None is accepted. If authorization requires one, stop and redesign; never embed it.                                                                               |
-| No-live fallback in offline/browser tests                | `pending`                     | Harness must fail closed on missing mock/service and deny unexpected network, rather than silently reaching production.                                           |
+| Requirement                                              | Status                        | Blocker                                                                                                                                                                                                                                                     |
+| -------------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Caravan-owned public redaction/forbidden surfaces        | `pending` final artifact      | Local facade canary tests cover errors, events, plans, results, console, and storage; repeat them against the exact final artifact and packed declarations.                                                                                                 |
+| Vendor WebHID `@sentry/minimal` behavior                 | `blocked-external`            | The authoring-tree WebHID `1.2.4`/Sentry `6.19.7` characterization observes duplicate host-Hub capture of a wrapper retaining the raw browser error. Final packed host-client payload/destination evidence and named privacy/authorization approval remain. |
+| Exact Ledger HTTPS/WSS/provider/origin/CSP configuration | `blocked-external`            | Written authorization and controlled production configuration are absent. Observed SDK defaults are not permission.                                                                                                                                         |
+| Browser secret                                           | `verified-static` design rule | None is accepted. If authorization requires one, stop and redesign; never embed it.                                                                                                                                                                         |
+| No-live fallback in offline/browser tests                | `pending`                     | Harness must fail closed on missing mock/service and deny unexpected network, rather than silently reaching production.                                                                                                                                     |
 
 A functional pass cannot downgrade a telemetry, privacy, provenance, or network
 finding.
@@ -116,8 +116,11 @@ and publication:
    mandatory offline contract run is recorded.
 3. **Real browser/native UI:** no pinned browser binary/image or approved native
    chooser/WebHID/privacy/network run is recorded.
-4. **Vendor Sentry:** packed WebHID capture behavior and destination/payload
-   handling lack empirical evidence and named acceptance/mitigation.
+4. **Vendor Sentry:** the authoring-tree resolved-runtime characterization
+   observes duplicate host-Hub capture and raw-error retention. The exact packed
+   bundle with a representative host client,
+   serialization/destination/retention evidence, and named acceptance or a
+   reviewed mitigation remain absent.
 5. **Physical support matrix:** the compiled model allowlist is empty and no
    model/firmware/browser/OS row has authorized physical evidence or sign-off.
 6. **Named ownership/enforcement:** all roles in
