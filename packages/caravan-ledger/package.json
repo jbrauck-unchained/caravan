@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
-    "ci": "npm run lint && npm run typecheck && npm run test && npm run test:private && npm run test:coverage && npm run test:package:built && npm run test:documentation:built && npm run test:ledger-contract:guard",
+    "ci": "npm run build && npm run lint && npm run typecheck && npm run test && npm run test:private && npm run test:coverage && npm run test:package:built && npm run test:documentation:built && npm run test:ledger-contract:guard",
     "dev": "npm run build -- --watch",
     "lint": "eslint src \"test/**/*.ts\"",
     "test": "vitest run src",

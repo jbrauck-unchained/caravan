@@ -91,7 +91,8 @@ jobs:
 
       - name: Record Playwright version
         id: ledger-playwright-version
-        run: echo "version=$(node -p \"require('./node_modules/@playwright/test/package.json').version\")" >> "$GITHUB_OUTPUT"
+        run: |
+          node -p '"version=" + require(require.resolve("@playwright/test/package.json", { paths: ["./packages/caravan-ledger"] })).version' >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright Chromium
         uses: actions/cache@v4
