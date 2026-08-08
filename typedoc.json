@@ -1,5 +1,6 @@
 {
-  "entryPoints": ["packages/**/src/index.ts"],
+  "entryPoints": ["packages/*/src/index.ts"],
+  "exclude": ["packages/*/test/**"],
   "tsconfig": "tsconfig.typedoc.json",
   "out": "docs",
   "includeVersion": true,
