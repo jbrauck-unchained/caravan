@@ -4,6 +4,7 @@ import {
   type DmkActionRunOptions,
   type DmkActionRunResult,
 } from "./actionRunner";
+import { systemClock, type Clock } from "./clock";
 import type {
   DmkActionOperation,
   DmkActionKind,
@@ -17,11 +18,17 @@ import type {
   DmkStream,
   DmkSubscription,
 } from "./dmkPort";
+import {
+  createSessionFinalizer,
+  type SessionFinalizationEvidence,
+  type SessionFinalizer,
+} from "./finalizeSession";
 import { acquireRuntimeLease, type RuntimeLease } from "./runtimeLease";
 import {
   productionSupportedModelPolicy,
   type SupportedModelPolicy,
 } from "./supportedModels";
+import type { HidReleaseBarrier } from "./waitForHidRelease";
 
 export class UnsupportedLedgerModelError extends Error {
   readonly name = "UnsupportedLedgerModelError" as const;
@@ -89,7 +96,21 @@ export interface SessionBitcoinInstallationRun
 export interface OpenOwnedSessionOptions {
   readonly modelPolicy?: SupportedModelPolicy;
   readonly acquireLease?: () => RuntimeLease;
+  readonly clock?: Clock;
 }
+
+export interface FinalizeOwnedDmkSessionOptions {
+  readonly clock: Clock;
+  readonly hidBarrier: HidReleaseBarrier;
+  readonly invalidatePlans: () => void;
+  readonly clearPrivateReferences: () => void;
+}
+
+const immediateUnavailableBarrier: HidReleaseBarrier = Object.freeze({
+  arm: () => Promise.resolve(),
+  wait: () => Promise.resolve("unavailable" as const),
+  cancel: () => undefined,
+});
 
 function readStrictGenuineResult(output: unknown): boolean | undefined {
   if (typeof output !== "object" || output === null) return undefined;
@@ -164,17 +185,31 @@ function rejectedStartedInstallRun(
 
 /** A private, generation-bound capability for later closed action adapters. */
 export class OwnedDmkSession {
-  readonly #port: DmkPort;
+  readonly #modelIdSnapshot: string | undefined;
 
-  readonly #session: DmkSession;
+  #port: DmkPort | undefined;
+
+  #session: DmkSession | undefined;
 
   readonly #lease: RuntimeLease;
+
+  readonly #clock: Clock;
+
+  #newWorkBlocked = false;
+
+  #sessionAuthorityInvalidated = false;
 
   #lifecycleSubscription: DmkSubscription | undefined;
 
   #lifecycleUnsubscribePending = false;
 
   #lifecycleUnsubscribed = false;
+
+  #sessionFinalizer: SessionFinalizer | undefined;
+
+  #finalizationPromise: Promise<SessionFinalizationEvidence> | undefined;
+
+  #rawDisconnectPromise: Promise<void> | undefined;
 
   #disconnectPromise: Promise<void> | undefined;
 
@@ -188,18 +223,38 @@ export class OwnedDmkSession {
 
   #invalidationNotified = false;
 
-  constructor(port: DmkPort, session: DmkSession, lease: RuntimeLease) {
+  constructor(
+    port: DmkPort,
+    session: DmkSession,
+    lease: RuntimeLease,
+    clock: Clock,
+    modelIdSnapshot: string | undefined,
+  ) {
+    this.#modelIdSnapshot = modelIdSnapshot;
     this.#port = port;
     this.#session = session;
     this.#lease = lease;
+    this.#clock = clock;
   }
 
   get generation(): number {
     return this.#lease.generation;
   }
 
+  /** The exact connected model value accepted by this session's model gate. */
+  get modelId(): string {
+    const modelId = this.#modelIdSnapshot;
+    if (modelId === undefined) throw new UnsupportedLedgerModelError();
+    return modelId;
+  }
+
   isCurrent(): boolean {
-    return this.#lease.isCurrent();
+    return (
+      !this.#newWorkBlocked &&
+      this.#lease.isCurrent() &&
+      this.#port !== undefined &&
+      this.#session !== undefined
+    );
   }
 
   /** Observe only the loss of this private generation, without native data. */
@@ -300,17 +355,14 @@ export class OwnedDmkSession {
   }
 
   attachLifecycle(stream: DmkStream<never>): void {
+    if (this.#newWorkBlocked || this.#lifecycleUnsubscribed) {
+      throw new InactiveLedgerSessionError();
+    }
     if (this.#lifecycleSubscription || this.#lifecycleUnsubscribePending) {
       throw new Error("The Ledger session lifecycle is already attached.");
     }
 
-    const invalidate = (): void => {
-      this.#revokeGenuineProof();
-      this.#lease.invalidate();
-      this.#cancelActiveActions();
-      this.#notifyInvalidated();
-      this.#unsubscribeLifecycle();
-    };
+    const invalidate = (): void => this.#invalidateFromLifecycle();
 
     let subscription: DmkSubscription;
     try {
@@ -320,18 +372,118 @@ export class OwnedDmkSession {
         complete: invalidate,
       });
     } catch (error) {
-      this.#revokeGenuineProof();
-      this.#lease.invalidate();
-      this.#cancelActiveActions();
-      this.#notifyInvalidated();
+      this.#invalidateFromLifecycle();
       throw error;
     }
     this.#lifecycleSubscription = subscription;
     if (this.#lifecycleUnsubscribePending) this.#unsubscribeLifecycle();
   }
 
+  /**
+   * Retire this generation through the ordered HID-aware finalizer.
+   *
+   * The first options object wins. Production operation code must call this
+   * method with its real HID barrier before any compatibility `disconnect()`.
+   */
+  finalize(
+    options: FinalizeOwnedDmkSessionOptions,
+  ): Promise<SessionFinalizationEvidence> {
+    if (this.#finalizationPromise) return this.#finalizationPromise;
+
+    let resolveFinalization!: (evidence: SessionFinalizationEvidence) => void;
+    const ownedFinalizationPromise = new Promise<SessionFinalizationEvidence>(
+      (resolve) => {
+        resolveFinalization = resolve;
+      },
+    );
+    // Latch before reading options or invoking any finalizer hook. Hostile
+    // getters and every later invalidation callback therefore observe the
+    // first caller's exact promise.
+    this.#finalizationPromise = ownedFinalizationPromise;
+
+    let finalizer: SessionFinalizer;
+    try {
+      // Snapshot every first-caller field before finalization begins. Later
+      // mutation (or a hostile getter) must not redirect individual hooks.
+      const clock = options.clock;
+      const hidBarrier = options.hidBarrier;
+      const invalidatePlans = options.invalidatePlans;
+      const clearPrivateReferences = options.clearPrivateReferences;
+      finalizer = createSessionFinalizer({
+        clock,
+        hidBarrier,
+        blockNewWork: () => this.#blockNewWork(),
+        cancelActiveActions: () => this.#cancelActiveActions(),
+        unsubscribeLifecycle: () => this.#unsubscribeLifecycle(),
+        invalidatePlansAndSession: () =>
+          this.#invalidatePlansAndSession(invalidatePlans),
+        disconnect: () => this.#disconnectRawOnce(),
+        clearPrivateReferences: () =>
+          this.#clearPrivateReferences(clearPrivateReferences),
+        releaseLease: () => this.#lease.release(),
+      });
+    } catch {
+      finalizer = createSessionFinalizer({
+        clock: this.#clock,
+        hidBarrier: immediateUnavailableBarrier,
+        blockNewWork: () => this.#blockNewWork(),
+        cancelActiveActions: () => this.#cancelActiveActions(),
+        unsubscribeLifecycle: () => this.#unsubscribeLifecycle(),
+        invalidatePlansAndSession: () =>
+          this.#invalidatePlansAndSession(() => undefined),
+        disconnect: () => this.#disconnectRawOnce(),
+        clearPrivateReferences: () =>
+          this.#clearPrivateReferences(() => undefined),
+        releaseLease: () => this.#lease.release(),
+      });
+    }
+    this.#sessionFinalizer = finalizer;
+    const finalization = finalizer.finalize();
+    void finalization.then(
+      (evidence) => {
+        this.#sessionFinalizer = undefined;
+        resolveFinalization(evidence);
+      },
+      () => {
+        this.#sessionFinalizer = undefined;
+        resolveFinalization(
+          Object.freeze({
+            hidRelease: "unavailable",
+            handoff: "reconnect-required",
+          }),
+        );
+      },
+    );
+    return ownedFinalizationPromise;
+  }
+
+  /**
+   * Compatibility teardown without OS-level release proof.
+   *
+   * Production handoff must invoke `finalize(realOptions)` first; otherwise
+   * this fallback wins and conservatively reports unavailable HID release.
+   */
   disconnect(): Promise<void> {
     if (this.#disconnectPromise) return this.#disconnectPromise;
+
+    let resolveDisconnect!: () => void;
+    const disconnectPromise = new Promise<void>((resolve) => {
+      resolveDisconnect = resolve;
+    });
+    // Latch before finalizer invalidation observers can reenter disconnect().
+    this.#disconnectPromise = disconnectPromise;
+    const finalization = this.finalize({
+      clock: this.#clock,
+      hidBarrier: immediateUnavailableBarrier,
+      invalidatePlans: () => undefined,
+      clearPrivateReferences: () => undefined,
+    });
+    void finalization.then(resolveDisconnect, resolveDisconnect);
+    return disconnectPromise;
+  }
+
+  #disconnectRawOnce(): Promise<void> {
+    if (this.#rawDisconnectPromise) return this.#rawDisconnectPromise;
 
     let resolveDisconnect!: () => void;
     let rejectDisconnect!: (error: unknown) => void;
@@ -339,28 +491,48 @@ export class OwnedDmkSession {
       resolveDisconnect = resolve;
       rejectDisconnect = reject;
     });
-    // Latch before invalidation observers can reenter disconnect().
-    this.#disconnectPromise = disconnectPromise;
-    void this.#completeDisconnect().then(resolveDisconnect, rejectDisconnect);
+    // The package-owned ordinary Promise is latched before vendor code can
+    // reenter. It is the only value exposed to the ordered finalizer.
+    this.#rawDisconnectPromise = disconnectPromise;
+
+    const port = this.#port;
+    const session = this.#session;
+    if (!port || !session) {
+      resolveDisconnect();
+      return disconnectPromise;
+    }
+
+    let rawDisconnect: Promise<void>;
+    try {
+      rawDisconnect = port.disconnect(session);
+    } catch (error) {
+      rejectDisconnect(error);
+      return disconnectPromise;
+    }
+    if (rawDisconnect === disconnectPromise) {
+      rejectDisconnect(new TypeError("The raw disconnect promise is recursive."));
+      return disconnectPromise;
+    }
+    try {
+      void Promise.resolve(rawDisconnect).then(
+        resolveDisconnect,
+        rejectDisconnect,
+      );
+    } catch (error) {
+      rejectDisconnect(error);
+    }
     return disconnectPromise;
   }
 
-  async #completeDisconnect(): Promise<void> {
-    this.#revokeGenuineProof();
-    this.#lease.invalidate();
-    this.#cancelActiveActions();
-    this.#notifyInvalidated();
-    this.#unsubscribeLifecycle();
-    try {
-      await this.#port.disconnect(this.#session);
-    } finally {
-      this.#lease.release();
-    }
-  }
-
   #assertCurrent(): void {
-    if (this.#lease.isCurrent()) return;
-    this.#revokeGenuineProof();
+    if (this.#newWorkBlocked) throw new InactiveLedgerSessionError();
+    if (this.#lease.isCurrent() && this.#port && this.#session) return;
+    this.#blockNewWork();
+    try {
+      this.#invalidateSessionAuthority();
+    } catch {
+      // The public boundary remains inactive even with a hostile lease.
+    }
     this.#cancelActiveActions();
     this.#notifyInvalidated();
     throw new InactiveLedgerSessionError();
@@ -388,7 +560,10 @@ export class OwnedDmkSession {
       throw new GenuineLedgerSessionRequiredError();
     }
 
-    const operation = this.#port.runAction(this.#session, action);
+    const port = this.#port;
+    const session = this.#session;
+    if (!port || !session) throw new InactiveLedgerSessionError();
+    const operation = port.runAction(session, action);
     if (!this.#lease.isCurrent() || this.#lease.generation !== generation) {
       cancelOperationSafely(operation);
       this.#notifyInvalidated();
@@ -420,7 +595,10 @@ export class OwnedDmkSession {
     options: DmkActionRunOptions,
   ): DmkActionRun<K> {
     const generation = this.#lease.generation;
-    const operation = this.#port.runAction(this.#session, action);
+    const port = this.#port;
+    const session = this.#session;
+    if (!port || !session) throw new InactiveLedgerSessionError();
+    const operation = port.runAction(session, action);
     if (!this.#lease.isCurrent() || this.#lease.generation !== generation) {
       cancelOperationSafely(operation);
       this.#notifyInvalidated();
@@ -491,6 +669,60 @@ export class OwnedDmkSession {
     this.#currentGenuineAttempt = undefined;
   }
 
+  #blockNewWork(): void {
+    this.#newWorkBlocked = true;
+  }
+
+  #invalidateFromLifecycle(): void {
+    this.#blockNewWork();
+    this.#cancelActiveActions();
+    this.#unsubscribeLifecycle();
+    try {
+      this.#invalidateSessionAuthority();
+    } catch {
+      // Lifecycle loss remains authoritative over a hostile lease adapter.
+    }
+    this.#notifyInvalidated();
+  }
+
+  #invalidatePlansAndSession(invalidatePlans: () => void): void {
+    let failed = false;
+    let failure: unknown;
+    try {
+      this.#invalidateSessionAuthority();
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      invalidatePlans();
+    } catch (error) {
+      if (!failed) failure = error;
+      failed = true;
+    }
+    this.#notifyInvalidated();
+    if (failed) throw failure;
+  }
+
+  #invalidateSessionAuthority(): void {
+    if (this.#sessionAuthorityInvalidated) return;
+    this.#sessionAuthorityInvalidated = true;
+    this.#revokeGenuineProof();
+    this.#lease.invalidate();
+  }
+
+  #clearPrivateReferences(clearPrivateReferences: () => void): void {
+    this.#port = undefined;
+    this.#session = undefined;
+    this.#rawDisconnectPromise = undefined;
+    this.#activeActions.clear();
+    this.#invalidationListeners.clear();
+    this.#lifecycleSubscription = undefined;
+    // Compatibility/finalization promises intentionally remain retained so
+    // every later caller receives the original settlement.
+    clearPrivateReferences();
+  }
+
   #cancelActiveActions(): void {
     for (const action of this.#activeActions) {
       if (action.invalidated) continue;
@@ -525,8 +757,10 @@ export class OwnedDmkSession {
     }
     this.#lifecycleUnsubscribed = true;
     this.#lifecycleUnsubscribePending = false;
+    const subscription = this.#lifecycleSubscription;
+    this.#lifecycleSubscription = undefined;
     try {
-      this.#lifecycleSubscription.unsubscribe();
+      subscription.unsubscribe();
     } catch {
       // Session invalidation is primary; native state must not escape here.
     }
@@ -540,6 +774,7 @@ export async function openOwnedDmkSession(
   options: OpenOwnedSessionOptions = {},
 ): Promise<OwnedDmkSession> {
   const modelPolicy = options.modelPolicy ?? productionSupportedModelPolicy;
+  const clock = options.clock ?? systemClock;
   const lease = (options.acquireLease ?? acquireRuntimeLease)();
 
   let session: DmkSession;
@@ -550,9 +785,29 @@ export async function openOwnedDmkSession(
     throw error;
   }
 
-  const ownedSession = new OwnedDmkSession(port, session, lease);
+  let modelIdSnapshot: string | undefined;
+  let modelReadFailed = false;
+  let modelReadFailure: unknown;
   try {
-    if (!modelPolicy.allows(session.modelId)) {
+    modelIdSnapshot = session.modelId;
+  } catch (error) {
+    modelReadFailed = true;
+    modelReadFailure = error;
+  }
+
+  const ownedSession = new OwnedDmkSession(
+    port,
+    session,
+    lease,
+    clock,
+    modelIdSnapshot,
+  );
+  try {
+    if (modelReadFailed) throw modelReadFailure;
+    if (
+      typeof modelIdSnapshot !== "string" ||
+      !modelPolicy.allows(modelIdSnapshot)
+    ) {
       throw new UnsupportedLedgerModelError();
     }
 

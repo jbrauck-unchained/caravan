@@ -1,5 +1,11 @@
 import { systemClock } from "./clock";
-import type { DmkDiscoveredDevice, DmkSession } from "./dmkPort";
+import type {
+  DmkDiscoveredDevice,
+  DmkSession,
+  DmkStream,
+  DmkSubscription,
+} from "./dmkPort";
+import { PROVISIONAL_HID_RELEASE_POLICY } from "./hidReleasePolicy";
 import {
   acquireRuntimeLease,
   currentRuntimeGenerationForTesting,
@@ -12,10 +18,16 @@ import {
   LedgerSessionActionBusyError,
   LedgerSessionEndedDuringSetupError,
   openOwnedDmkSession,
+  type FinalizeOwnedDmkSessionOptions,
+  type OwnedDmkSession,
   UnsupportedLedgerModelError,
 } from "./session";
 import { createCandidateModelPolicyForTesting } from "./supportedModels";
 import { ScriptedDmk } from "./testing/scriptedDmk";
+import type {
+  HidReleaseBarrier,
+  HidReleaseOutcome,
+} from "./waitForHidRelease";
 
 const device: DmkDiscoveredDevice = Object.freeze({
   internalDeviceId: "opaque-device",
@@ -31,6 +43,67 @@ const missingModelSession: DmkSession = Object.freeze({
 });
 
 const candidatePolicy = createCandidateModelPolicyForTesting(["nanoS"]);
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function testBarrier(
+  outcome: HidReleaseOutcome | Promise<HidReleaseOutcome> = "released",
+  calls?: string[],
+): {
+  readonly barrier: HidReleaseBarrier;
+  readonly arm: ReturnType<typeof vi.fn>;
+  readonly wait: ReturnType<typeof vi.fn>;
+  readonly cancel: ReturnType<typeof vi.fn>;
+} {
+  const arm = vi.fn(() => {
+    calls?.push("arm-barrier");
+    return Promise.resolve();
+  });
+  const wait = vi.fn(() => {
+    calls?.push("wait-barrier");
+    return Promise.resolve(outcome);
+  });
+  const cancel = vi.fn();
+  return {
+    barrier: Object.freeze({ arm, wait, cancel }),
+    arm,
+    wait,
+    cancel,
+  };
+}
+
+function finalizationOptions(
+  barrier: HidReleaseBarrier,
+  overrides: Partial<FinalizeOwnedDmkSessionOptions> = {},
+): FinalizeOwnedDmkSessionOptions {
+  return {
+    clock: systemClock,
+    hidBarrier: barrier,
+    invalidatePlans: () => undefined,
+    clearPrivateReferences: () => undefined,
+    ...overrides,
+  };
+}
 
 describe("owned DMK session", () => {
   beforeEach(() => {
@@ -91,6 +164,39 @@ describe("owned DMK session", () => {
       activeSubscriptions: 0,
     });
     expect(owned.isCurrent()).toBe(false);
+  });
+
+  it("exposes only the exact connected model snapshot accepted by the gate", async () => {
+    let currentModelId = "nanoS";
+    const modelIdReads = vi.fn(() => currentModelId);
+    const volatileSession: DmkSession = {
+      internalSessionId: "opaque-volatile-session",
+      get modelId() {
+        return modelIdReads();
+      },
+    };
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: volatileSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const modelPolicy = {
+      allows: vi.fn((modelId: string | undefined) => {
+        currentModelId = "nanoX";
+        return modelId === "nanoS";
+      }),
+    };
+
+    const owned = await openOwnedDmkSession(fake, device, { modelPolicy });
+
+    currentModelId = "flex";
+    expect(modelPolicy.allows).toHaveBeenCalledOnce();
+    expect(modelPolicy.allows).toHaveBeenCalledWith("nanoS");
+    expect(modelIdReads).toHaveBeenCalledOnce();
+    expect(owned.modelId).toBe("nanoS");
+    expect(modelIdReads).toHaveBeenCalledOnce();
+    expect(Object.keys(owned)).toEqual([]);
+    expect(JSON.stringify(owned)).toBe("{}");
+
+    await owned.disconnect();
   });
 
   it("keeps the production allowlist empty and blocks before observation", async () => {
@@ -660,5 +766,525 @@ describe("owned DMK session", () => {
       activeSubscriptions: 0,
       scheduledTimers: 0,
     });
+  });
+
+  it("finalizes session ownership in the exact reviewed order", async () => {
+    const calls: string[] = [];
+    let leaseCurrent = true;
+    const lease = {
+      generation: 41,
+      isCurrent: () => leaseCurrent,
+      invalidate: vi.fn(() => {
+        calls.push("invalidate-lease");
+        leaseCurrent = false;
+      }),
+      release: vi.fn(() => {
+        calls.push("release-lease");
+        leaseCurrent = false;
+      }),
+    };
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueAction("genuine", [
+        {
+          type: "next",
+          value: {
+            status: "completed",
+            output: { isGenuine: true },
+          },
+        },
+      ])
+      .queueAction("list-bitcoin", [{ type: "never" }]);
+
+    const originalLifecycle = fake.observeSessionLifecycle.bind(fake);
+    vi.spyOn(fake, "observeSessionLifecycle").mockImplementation(
+      (session): DmkStream<never> => {
+        const stream = originalLifecycle(session);
+        return {
+          subscribe: (observer): DmkSubscription => {
+            const subscription = stream.subscribe(observer);
+            return {
+              get closed() {
+                return subscription.closed;
+              },
+              unsubscribe: () => {
+                calls.push("unsubscribe-lifecycle");
+                subscription.unsubscribe();
+              },
+            };
+          },
+        };
+      },
+    );
+
+    const ownedHolder: { current?: OwnedDmkSession } = {};
+    const originalRunAction = fake.runAction.bind(fake);
+    vi.spyOn(fake, "runAction").mockImplementation(((session, action) => {
+      const operation = originalRunAction(session, action as never);
+      if (action.kind !== "list-bitcoin") return operation as never;
+      return {
+        ...operation,
+        cancel: () => {
+          calls.push("cancel-action");
+          const currentOwned = ownedHolder.current;
+          if (!currentOwned) throw new Error("Missing owned test session.");
+          expect(currentOwned.isCurrent()).toBe(false);
+          expect(() => currentOwned.dispatchGenuineCheck()).toThrow(
+            InactiveLedgerSessionError,
+          );
+          operation.cancel();
+        },
+      } as never;
+    }) as typeof fake.runAction);
+
+    const originalDisconnect = fake.disconnect.bind(fake);
+    vi.spyOn(fake, "disconnect").mockImplementation((session) => {
+      calls.push("disconnect");
+      return originalDisconnect(session);
+    });
+
+    const owned = await openOwnedDmkSession(fake, device, {
+      acquireLease: () => lease,
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    ownedHolder.current = owned;
+    expect((await owned.dispatchGenuineCheck().result).settlement).toBe(
+      "passed",
+    );
+    const inspection = owned.dispatchBitcoinInspection();
+    owned.onInvalidated(() => calls.push("notify-invalidated"));
+    const barrier = testBarrier("released", calls);
+
+    const evidence = await owned.finalize(
+      finalizationOptions(barrier.barrier, {
+        invalidatePlans: () => calls.push("invalidate-plans"),
+        clearPrivateReferences: () => calls.push("clear-private-references"),
+      }),
+    );
+
+    await expect(inspection.result).resolves.toEqual({ status: "cancelled" });
+    expect(evidence).toEqual({ hidRelease: "released", handoff: "ready" });
+    expect(calls).toEqual([
+      "cancel-action",
+      "unsubscribe-lifecycle",
+      "invalidate-lease",
+      "invalidate-plans",
+      "notify-invalidated",
+      "arm-barrier",
+      "disconnect",
+      "wait-barrier",
+      "clear-private-references",
+      "release-lease",
+    ]);
+    expect(lease.invalidate).toHaveBeenCalledTimes(1);
+    expect(lease.release).toHaveBeenCalledTimes(1);
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      cancelCount: 1,
+      activeSubscriptions: 0,
+    });
+  });
+
+  it("retains the runtime lease through disconnect timeout and HID observation", async () => {
+    const release = deferred<HidReleaseOutcome>();
+    const barrier = testBarrier(release.promise);
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueDisconnect({ type: "never" });
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+
+    const finalization = owned.finalize(finalizationOptions(barrier.barrier));
+    await flushMicrotasks();
+
+    expect(owned.isCurrent()).toBe(false);
+    expect(fake.resources().disconnectCount).toBe(1);
+    expect(barrier.wait).not.toHaveBeenCalled();
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+    );
+    expect(barrier.wait).toHaveBeenCalledTimes(1);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+    release.resolve("released");
+    await expect(finalization).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "ready",
+    });
+    const nextLease = acquireRuntimeLease();
+    expect(nextLease.isCurrent()).toBe(true);
+    nextLease.release();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("holds the lease across delayed disconnect and clears its watchdog", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueDisconnect({ type: "resolve", value: undefined, afterMs: 500 });
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    const barrier = testBarrier();
+    const finalization = owned.finalize(finalizationOptions(barrier.barrier));
+    await flushMicrotasks();
+
+    await vi.advanceTimersByTimeAsync(499);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+    expect(barrier.wait).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(finalization).resolves.toMatchObject({ handoff: "ready" });
+    expect(barrier.wait).toHaveBeenCalledTimes(1);
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fake.resources().scheduledTimers).toBe(0);
+  });
+
+  it("keeps disconnect rejection secondary and still proves HID release", async () => {
+    const rawError = new Error("private-raw-disconnect-canary");
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueDisconnect({ type: "reject", error: rawError, afterMs: 5 });
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    const barrier = testBarrier();
+    const finalization = owned.finalize(finalizationOptions(barrier.barrier));
+
+    await vi.advanceTimersByTimeAsync(5);
+    const evidence = await finalization;
+
+    expect(evidence).toEqual({ hidRelease: "released", handoff: "ready" });
+    expect(JSON.stringify(evidence)).not.toContain(rawError.message);
+    expect(barrier.wait).toHaveBeenCalledTimes(1);
+    expect(fake.resources().disconnectCount).toBe(1);
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("lets first finalization options win across reentrant finalize and disconnect", async () => {
+    const firstCalls: string[] = [];
+    const secondCalls: string[] = [];
+    const firstBarrier = testBarrier("released", firstCalls);
+    const secondBarrier = testBarrier("timed-out", secondCalls);
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    const secondOptions = finalizationOptions(secondBarrier.barrier, {
+      invalidatePlans: () => secondCalls.push("invalidate-plans"),
+      clearPrivateReferences: () => secondCalls.push("clear-private-references"),
+    });
+    let nestedFinalization: Promise<unknown> | undefined;
+    let nestedDisconnect: Promise<void> | undefined;
+    owned.onInvalidated(() => {
+      nestedFinalization = owned.finalize(secondOptions);
+      nestedDisconnect = owned.disconnect();
+    });
+    const firstOptions = finalizationOptions(firstBarrier.barrier, {
+      invalidatePlans: () => firstCalls.push("invalidate-plans"),
+      clearPrivateReferences: () => firstCalls.push("clear-private-references"),
+    });
+
+    const first = owned.finalize(firstOptions);
+    const repeated = owned.finalize(secondOptions);
+
+    expect(repeated).toBe(first);
+    expect(nestedFinalization).toBe(first);
+    expect(owned.disconnect()).toBe(nestedDisconnect);
+    await expect(first).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "ready",
+    });
+    await nestedDisconnect;
+    expect(firstCalls).toEqual([
+      "invalidate-plans",
+      "arm-barrier",
+      "wait-barrier",
+      "clear-private-references",
+    ]);
+    expect(secondCalls).toEqual([]);
+    expect(fake.resources().disconnectCount).toBe(1);
+  });
+
+  it("snapshots first-caller cleanup hooks before asynchronous finalization", async () => {
+    const release = deferred<HidReleaseOutcome>();
+    const barrier = testBarrier(release.promise);
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    const acceptedClear = vi.fn();
+    const replacementClear = vi.fn();
+    const options = {
+      clock: systemClock,
+      hidBarrier: barrier.barrier,
+      invalidatePlans: vi.fn(),
+      clearPrivateReferences: acceptedClear,
+    };
+
+    const finalization = owned.finalize(options);
+    options.clearPrivateReferences = replacementClear;
+    await flushMicrotasks();
+    release.resolve("released");
+
+    await expect(finalization).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "ready",
+    });
+    expect(acceptedClear).toHaveBeenCalledOnce();
+    expect(replacementClear).not.toHaveBeenCalled();
+  });
+
+  it("falls back safely when reading first-caller hooks is hostile", async () => {
+    let leaseCurrent = true;
+    const lease = {
+      generation: 73,
+      isCurrent: () => leaseCurrent,
+      invalidate: vi.fn(() => {
+        leaseCurrent = false;
+      }),
+      release: vi.fn(() => {
+        leaseCurrent = false;
+      }),
+    };
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      acquireLease: () => lease,
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    const invalidated = vi.fn();
+    owned.onInvalidated(invalidated);
+    const getterFailure = new Error("private-options-getter-canary");
+    const invalidatePlansGetter = vi.fn(() => {
+      throw getterFailure;
+    });
+    const externalClear = vi.fn();
+    const options = Object.create(null) as FinalizeOwnedDmkSessionOptions;
+    Object.defineProperties(options, {
+      clock: { value: systemClock },
+      hidBarrier: { value: testBarrier().barrier },
+      invalidatePlans: { get: invalidatePlansGetter },
+      clearPrivateReferences: { value: externalClear },
+    });
+
+    const evidence = await owned.finalize(options);
+
+    expect(evidence).toEqual({
+      hidRelease: "unavailable",
+      handoff: "reconnect-required",
+    });
+    expect(invalidatePlansGetter).toHaveBeenCalledOnce();
+    expect(lease.invalidate).toHaveBeenCalledOnce();
+    expect(invalidated).toHaveBeenCalledOnce();
+    expect(lease.release).toHaveBeenCalledOnce();
+    expect(externalClear).not.toHaveBeenCalled();
+    expect(owned.isCurrent()).toBe(false);
+  });
+
+  it("blocks lifecycle reattachment from a hostile unsubscribe callback", async () => {
+    const fake = new ScriptedDmk(systemClock).queueConnect({
+      type: "resolve",
+      value: allowedSession,
+    });
+    let reattachFailure: unknown;
+    const replacementSubscribe = vi.fn();
+    const replacementStream: DmkStream<never> = {
+      subscribe: () => {
+        replacementSubscribe();
+        return { closed: false, unsubscribe: vi.fn() };
+      },
+    };
+    const initialUnsubscribe = vi.fn(() => {
+      try {
+        owned.attachLifecycle(replacementStream);
+      } catch (error) {
+        reattachFailure = error;
+      }
+    });
+    vi.spyOn(fake, "observeSessionLifecycle").mockReturnValue({
+      subscribe: () => ({
+        closed: false,
+        unsubscribe: initialUnsubscribe,
+      }),
+    });
+    const owned: OwnedDmkSession = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+
+    await owned.finalize(finalizationOptions(testBarrier().barrier));
+
+    expect(initialUnsubscribe).toHaveBeenCalledOnce();
+    expect(reattachFailure).toBeInstanceOf(InactiveLedgerSessionError);
+    expect(replacementSubscribe).not.toHaveBeenCalled();
+  });
+
+  it("contains synchronous and hostile-thenable raw disconnects", async () => {
+    const rawCanary = new Error("private-hostile-disconnect-canary");
+    const cases: readonly (() => Promise<void>)[] = [
+      () => {
+        throw rawCanary;
+      },
+      () =>
+        Object.defineProperty({}, "then", {
+          get: () => {
+            throw rawCanary;
+          },
+        }) as Promise<void>,
+    ];
+
+    for (const disconnect of cases) {
+      const fake = new ScriptedDmk(systemClock)
+        .queueConnect({ type: "resolve", value: allowedSession })
+        .queueSessionLifecycle([{ type: "never" }]);
+      const disconnectSpy = vi
+        .spyOn(fake, "disconnect")
+        .mockImplementation(disconnect);
+      const owned = await openOwnedDmkSession(fake, device, {
+        clock: systemClock,
+        modelPolicy: candidatePolicy,
+      });
+
+      await expect(
+        owned.finalize(finalizationOptions(testBarrier().barrier)),
+      ).resolves.toEqual({ hidRelease: "released", handoff: "ready" });
+      expect(disconnectSpy).toHaveBeenCalledOnce();
+      const nextLease = acquireRuntimeLease();
+      nextLease.release();
+    }
+  });
+
+  it("keeps a lifecycle-invalidated lease owned until eventual finalization", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([
+        {
+          type: "error",
+          error: new Error("private-lifecycle-canary"),
+          atMs: 5,
+        },
+      ]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(owned.isCurrent()).toBe(false);
+    expect(fake.resources().disconnectCount).toBe(0);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+    await owned.finalize(finalizationOptions(testBarrier().barrier));
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+    expect(fake.resources().disconnectCount).toBe(1);
+  });
+
+  it("makes compatibility disconnect the conservative first-options winner", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    const realBarrier = testBarrier("released");
+
+    const firstDisconnect = owned.disconnect();
+    const secondDisconnect = owned.disconnect();
+    const evidence = owned.finalize(finalizationOptions(realBarrier.barrier));
+
+    expect(secondDisconnect).toBe(firstDisconnect);
+    await expect(evidence).resolves.toEqual({
+      hidRelease: "unavailable",
+      handoff: "reconnect-required",
+    });
+    await firstDisconnect;
+    expect(realBarrier.arm).not.toHaveBeenCalled();
+    expect(realBarrier.wait).not.toHaveBeenCalled();
+    expect(fake.resources().disconnectCount).toBe(1);
+    expect(() => owned.dispatchGenuineCheck()).toThrow(
+      InactiveLedgerSessionError,
+    );
+    expect(fake.resources().actionCount).toBe(0);
+  });
+
+  it("deduplicates repeated action cancellation and ignores late terminals", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueAction("genuine", [
+        {
+          type: "next",
+          value: {
+            status: "completed",
+            output: { isGenuine: true },
+          },
+        },
+      ])
+      .queueAction("list-bitcoin", [
+        {
+          type: "next",
+          value: {
+            status: "completed",
+            output: { bitcoinPresent: true },
+          },
+          atMs: 5,
+          afterCancel: true,
+        },
+      ]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      clock: systemClock,
+      modelPolicy: candidatePolicy,
+    });
+    expect((await owned.dispatchGenuineCheck().result).settlement).toBe(
+      "passed",
+    );
+    const inspection = owned.dispatchBitcoinInspection();
+    inspection.cancel();
+    inspection.cancel();
+    const clearPrivateReferences = vi.fn();
+    const options = finalizationOptions(testBarrier().barrier, {
+      clearPrivateReferences,
+    });
+
+    const first = owned.finalize(options);
+    expect(owned.finalize(options)).toBe(first);
+    await expect(inspection.result).resolves.toEqual({ status: "cancelled" });
+    await expect(first).resolves.toMatchObject({ handoff: "ready" });
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(fake.resources()).toMatchObject({
+      cancelCount: 1,
+      disconnectCount: 1,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+    expect(clearPrivateReferences).toHaveBeenCalledTimes(1);
+    await owned.disconnect();
+    expect(fake.resources().disconnectCount).toBe(1);
   });
 });
