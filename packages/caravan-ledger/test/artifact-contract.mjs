@@ -69,6 +69,7 @@ const FORBIDDEN_DECLARATION_SURFACES = [
 const APPROVED_DEV_DEPENDENCIES = [
   "@caravan/eslint-config@*",
   "@caravan/typescript-config@*",
+  "@playwright/test@1.60.0",
   "typescript@^5.3.3",
 ].sort();
 

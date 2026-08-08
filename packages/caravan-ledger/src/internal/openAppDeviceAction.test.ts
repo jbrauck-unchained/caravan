@@ -72,6 +72,7 @@ describe("Bitcoin-only pinned open action", () => {
   });
 
   it.each([
+    ["primitive request", null],
     ["missing input", {}],
     ["missing app name", { input: {} }],
     ["wrong case", { input: { appName: "bitcoin" } }],

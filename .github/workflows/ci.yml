@@ -65,6 +65,52 @@ jobs:
         run: |
           npx turbo run ci
 
+      - name: Generate public API documentation
+        run: npm run docs
+
+  ledger-browser:
+    name: Ledger synthetic Chromium contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Pin npm to 11.14.1
+        run: npm install -g npm@11.14.1
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Record Playwright version
+        id: ledger-playwright-version
+        run: echo "version=$(node -p \"require('./node_modules/@playwright/test/package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        id: ledger-playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-ledger-playwright-${{ steps.ledger-playwright-version.outputs.version }}
+
+      - name: Install exact Playwright Chromium
+        run: node node_modules/@playwright/test/cli.js install chromium
+
+      - name: Install Chromium system dependencies
+        run: node node_modules/@playwright/test/cli.js install-deps chromium
+
+      - name: Run packed Ledger browser contract
+        env:
+          CARAVAN_LEDGER_RUN_NATIVE: "1"
+        run: npm run test:browser-native --workspace=@caravan/ledger
+
   # Run e2e tests only for coordinator-related changes
   check-e2e:
     name: Run E2E Check

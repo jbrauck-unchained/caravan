@@ -36,6 +36,7 @@ vi.mock("@ledgerhq/device-transport-kit-web-hid", () => ({
 }));
 
 import {
+  assertValidInternalDmkServiceConfig,
   assertProductionDmkConfigurationApproved,
   type InternalDmkServiceConfig,
   UNAPPROVED_PRODUCTION_DMK_CONFIG,
@@ -126,6 +127,44 @@ describe("cached DMK runtime", () => {
       acquireDmkRuntime(UNAPPROVED_PRODUCTION_DMK_CONFIG, succeedingFactory),
     ).toBe(sdkMocks.runtime);
     expect(succeedingFactory).toHaveBeenCalledOnce();
+  });
+
+  it("rejects reentrant runtime construction and leaves the outer factory authoritative", () => {
+    let nestedError: unknown;
+    const outerFactory = vi.fn(() => {
+      try {
+        acquireDmkRuntime(UNAPPROVED_PRODUCTION_DMK_CONFIG, outerFactory);
+      } catch (error) {
+        nestedError = error;
+      }
+      return sdkMocks.runtime as never;
+    });
+
+    expect(
+      acquireDmkRuntime(UNAPPROVED_PRODUCTION_DMK_CONFIG, outerFactory),
+    ).toBe(sdkMocks.runtime);
+    expect(nestedError).toEqual(
+      new Error("Ledger DMK runtime construction is already in progress."),
+    );
+    expect(outerFactory).toHaveBeenCalledOnce();
+  });
+
+  it("rejects altered authorization markers and missing service endpoints", () => {
+    expect(() =>
+      assertValidInternalDmkServiceConfig({
+        ...UNAPPROVED_PRODUCTION_DMK_CONFIG,
+        authorization: "approved" as never,
+      }),
+    ).toThrow("authorization marker is invalid");
+
+    for (const config of [
+      { ...UNAPPROVED_PRODUCTION_DMK_CONFIG, managerApiUrl: "" },
+      { ...UNAPPROVED_PRODUCTION_DMK_CONFIG, webSocketUrl: "" },
+    ]) {
+      expect(() => assertValidInternalDmkServiceConfig(config)).toThrow(
+        "service endpoints must be present",
+      );
+    }
   });
 
   it("retains an explicit failing production authorization gate", () => {

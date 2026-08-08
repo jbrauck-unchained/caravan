@@ -1463,4 +1463,190 @@ describe("DMK adapter", () => {
     expect(statusHarness.nativeCancel).toHaveBeenCalledOnce();
     expect(interactionHarness.nativeCancel).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    [
+      "missing pending payload",
+      { status: DeviceActionStatus.Pending },
+    ],
+    [
+      "open-only confirmation on a genuine check",
+      {
+        status: DeviceActionStatus.Pending,
+        intermediateValue: {
+          requiredUserInteraction: UserInteractionRequired.ConfirmOpenApp,
+        },
+      },
+    ],
+  ])("fails closed for %s", async (_label, state) => {
+    const harness = await makeActionHarness("genuine");
+
+    harness.source.next(state);
+
+    expectFailedClosedState(harness.states);
+    expect(harness.nativeCancel).toHaveBeenCalledOnce();
+    expect(harness.source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a second action subscription and exposes native closed state safely", async () => {
+    const { adapter, runtime, session } = await makeConnectedAdapter();
+    const source = nativeStream<unknown>();
+    runtime.executeDeviceAction.mockReturnValue({
+      observable: source.stream,
+      cancel: vi.fn(),
+    });
+    const operation = adapter.runAction(session, { kind: "genuine" });
+    const observer = { next: vi.fn(), error: vi.fn(), complete: vi.fn() };
+    const subscription = operation.stream.subscribe(observer);
+
+    expect(subscription.closed).toBe(false);
+    expect(() => operation.stream.subscribe(observer)).toThrow(
+      "may only be subscribed once",
+    );
+
+    subscription.unsubscribe();
+    subscription.unsubscribe();
+    expect(subscription.closed).toBe(true);
+    expect(source.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when a native subscription exposes a non-boolean closed marker", async () => {
+    const { adapter, runtime, session } = await makeConnectedAdapter();
+    const unsubscribe = vi.fn();
+    const nativeCancel = vi.fn();
+    runtime.executeDeviceAction.mockReturnValue({
+      observable: {
+        subscribe: vi.fn(() => ({ closed: "not-boolean", unsubscribe })),
+      },
+      cancel: nativeCancel,
+    });
+    const subscription = adapter
+      .runAction(session, { kind: "genuine" })
+      .stream.subscribe({ next: vi.fn(), error: vi.fn(), complete: vi.fn() });
+
+    expect(subscription.closed).toBe(true);
+    expect(nativeCancel).toHaveBeenCalledOnce();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a second discovery subscription and ignores every late native signal after cancellation", () => {
+    const discovery = nativeStream<typeof nativeDevice>();
+    const runtime = makeRuntime();
+    runtime.startDiscovering.mockReturnValue(discovery.stream);
+    const adapter = new DmkAdapter(runtime as never);
+    const operation = adapter.startDiscovery();
+    const observer = { next: vi.fn(), error: vi.fn(), complete: vi.fn() };
+    const subscription = operation.stream.subscribe(observer);
+
+    expect(() => operation.stream.subscribe(observer)).toThrow(
+      "may only be subscribed once",
+    );
+    operation.cancel();
+    discovery.next(nativeDevice);
+    discovery.error(new Error("late discovery failure"));
+    discovery.complete();
+
+    expect(observer.next).not.toHaveBeenCalled();
+    expect(observer.error).not.toHaveBeenCalled();
+    expect(observer.complete).not.toHaveBeenCalled();
+    subscription.unsubscribe();
+    expect(subscription.closed).toBe(true);
+  });
+
+  it.each(["error", "complete"] as const)(
+    "forwards a live discovery %s before cancellation",
+    (terminal) => {
+      const discovery = nativeStream<typeof nativeDevice>();
+      const runtime = makeRuntime();
+      runtime.startDiscovering.mockReturnValue(discovery.stream);
+      const adapter = new DmkAdapter(runtime as never);
+      const observer = { next: vi.fn(), error: vi.fn(), complete: vi.fn() };
+      const subscription = adapter
+        .startDiscovery()
+        .stream.subscribe(observer);
+      expect(subscription.closed).toBe(false);
+
+      if (terminal === "error") {
+        const error = new Error("discovery failed");
+        discovery.error(error);
+        expect(observer.error).toHaveBeenCalledWith(error);
+      } else {
+        discovery.complete();
+        expect(observer.complete).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it("reduces a non-string connected model to unavailable private metadata", async () => {
+    const discovery = nativeStream<typeof nativeDevice>();
+    const runtime = makeRuntime();
+    runtime.startDiscovering.mockReturnValue(discovery.stream);
+    runtime.connect.mockResolvedValue("native-session-secret");
+    runtime.getConnectedDevice.mockReturnValue({ modelId: 42 });
+    const adapter = new DmkAdapter(runtime as never);
+    const operation = adapter.startDiscovery();
+    let selected: Parameters<typeof adapter.connect>[0] | undefined;
+    operation.stream.subscribe({
+      next: (device) => {
+        selected = device;
+      },
+      error: vi.fn(),
+      complete: vi.fn(),
+    });
+    discovery.next(nativeDevice);
+
+    await expect(adapter.connect(selected!)).resolves.toEqual({
+      internalSessionId: "caravan-session-1",
+      modelId: undefined,
+    });
+  });
+
+  it("preserves a connection rejection without attempting session cleanup", async () => {
+    const discovery = nativeStream<typeof nativeDevice>();
+    const runtime = makeRuntime();
+    const connectError = new Error("connection rejected");
+    runtime.startDiscovering.mockReturnValue(discovery.stream);
+    runtime.connect.mockRejectedValue(connectError);
+    const adapter = new DmkAdapter(runtime as never);
+    const operation = adapter.startDiscovery();
+    let selected: Parameters<typeof adapter.connect>[0] | undefined;
+    operation.stream.subscribe({
+      next: (device) => {
+        selected = device;
+      },
+      error: vi.fn(),
+      complete: vi.fn(),
+    });
+    discovery.next(nativeDevice);
+
+    await expect(adapter.connect(selected!)).rejects.toBe(connectError);
+    expect(runtime.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("allows one lifecycle subscription and rejects reuse of that stream", async () => {
+    const { adapter, runtime, session } = await makeConnectedAdapter();
+    const lifecycle = nativeStream<unknown>();
+    runtime.getDeviceSessionState.mockReturnValue(lifecycle.stream);
+    const stream = adapter.observeSessionLifecycle(session);
+    const observer = { next: vi.fn(), error: vi.fn(), complete: vi.fn() };
+    const subscription = stream.subscribe(observer);
+
+    expect(subscription.closed).toBe(false);
+    expect(() => stream.subscribe(observer)).toThrow(
+      "may only be subscribed once",
+    );
+    subscription.unsubscribe();
+    expect(subscription.closed).toBe(true);
+  });
+
+  it("rejects use of an already disconnected session before consulting the runtime", async () => {
+    const { adapter, runtime, session } = await makeConnectedAdapter();
+
+    await adapter.disconnect(session);
+
+    expect(() => adapter.runAction(session, { kind: "genuine" })).toThrow(
+      "not owned by this adapter",
+    );
+    expect(runtime.executeDeviceAction).not.toHaveBeenCalled();
+  });
 });

@@ -8,6 +8,7 @@ describe("systemClock", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("provides injectable time and cancellable timers", () => {
@@ -22,5 +23,37 @@ describe("systemClock", () => {
     vi.advanceTimersByTime(25);
     expect(systemClock.monotonicNow()).toBe(monotonicStartedAt + 25);
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a primitive performance boundary", 1],
+    ["a missing now method", {}],
+    ["a non-finite reading", { now: () => Number.POSITIVE_INFINITY }],
+    ["a negative reading", { now: () => -1 }],
+    [
+      "a throwing reading",
+      {
+        now: () => {
+          throw new Error("host clock failed");
+        },
+      },
+    ],
+  ])("fails closed for %s", (_label, performanceValue) => {
+    vi.stubGlobal("performance", performanceValue);
+
+    expect(() => systemClock.monotonicNow()).toThrow(
+      "A monotonic runtime clock is unavailable.",
+    );
+  });
+
+  it("accepts a callable performance host with a bound monotonic method", () => {
+    const performanceValue = Object.assign(() => undefined, {
+      now() {
+        return 17;
+      },
+    });
+    vi.stubGlobal("performance", performanceValue);
+
+    expect(systemClock.monotonicNow()).toBe(17);
   });
 });

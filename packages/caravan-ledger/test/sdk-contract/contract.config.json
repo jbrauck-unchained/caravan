@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "status": "blocked-external",
+  "runtimePins": {
+    "@ledgerhq/device-management-kit": "1.7.1",
+    "@ledgerhq/device-transport-kit-web-hid": "1.2.4",
+    "rxjs": "7.8.2"
+  },
+  "networkPolicy": {
+    "allowedHosts": ["127.0.0.1", "::1"],
+    "dns": "deny",
+    "liveFallback": "deny",
+    "explicitRandomPorts": true
+  },
+  "requiredScenarios": [
+    "genuine-true",
+    "genuine-false",
+    "genuine-certificate-failure",
+    "bitcoin-absent",
+    "bitcoin-present",
+    "install-success",
+    "user-refusal-primary",
+    "user-refusal-secondary",
+    "device-locked-primary",
+    "device-locked-secondary",
+    "action-failure",
+    "out-of-memory",
+    "already-installed",
+    "concurrent-already-installed",
+    "partial-install-block-failure",
+    "disconnect",
+    "websocket-failure",
+    "manager-failure",
+    "cancel",
+    "post-install-verification-failure",
+    "state-isolation"
+  ],
+  "approval": null,
+  "provenance": null,
+  "mockService": null,
+  "fixtures": null,
+  "runner": null,
+  "blockers": [
+    "Reviewed SDK repository and immutable source commit",
+    "Reconciled runtime package integrity-to-source map",
+    "Approved mock-service source or OCI digest and rebuild procedure",
+    "Schema-pinned catalog and scenario fixture digests",
+    "Trusted empty-inventory versus missing-result SDK distinction",
+    "Reviewed offline real-SDK runner and OS-level network isolation",
+    "Named supply-chain and security approval record"
+  ]
+}

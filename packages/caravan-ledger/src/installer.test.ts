@@ -20,6 +20,7 @@ import {
 } from "./internal/runtimeLease";
 import { createCandidateModelPolicyForTesting } from "./internal/supportedModels";
 import { ScriptedDmk } from "./internal/testing/scriptedDmk";
+import { PROVISIONAL_OPERATION_WATCHDOG_POLICY } from "./internal/timeoutPolicy";
 import type { BitcoinAppInstaller, BitcoinInstallPlan } from "./types";
 
 const device: DmkDiscoveredDevice = Object.freeze({
@@ -186,10 +187,7 @@ describe("Bitcoin app installer facade", () => {
   );
 
   it("installs, independently verifies, opens, releases, and returns the public result", async () => {
-    const fake = queueSuccessfulPreparation(
-      new ScriptedDmk(systemClock),
-      false,
-    )
+    const fake = queueSuccessfulPreparation(new ScriptedDmk(systemClock), false)
       .queueAction("install-bitcoin", [
         { type: "attempt-install-mutation" },
         {
@@ -567,8 +565,9 @@ describe("Bitcoin app installer facade", () => {
   });
 
   it("allows a fresh preparation after cancellation cleanup", async () => {
-    const fake = new ScriptedDmk(systemClock)
-      .queueDiscovery([{ type: "never" }]);
+    const fake = new ScriptedDmk(systemClock).queueDiscovery([
+      { type: "never" },
+    ]);
     const installer = createInstaller(fake);
     const first = installer.prepare();
 
@@ -637,10 +636,7 @@ describe("Bitcoin app installer facade", () => {
   });
 
   it("rejects a reentrant duplicate install without dispatching a second action", async () => {
-    const fake = queueSuccessfulPreparation(
-      new ScriptedDmk(systemClock),
-      false,
-    )
+    const fake = queueSuccessfulPreparation(new ScriptedDmk(systemClock), false)
       .queueAction("install-bitcoin", [
         { type: "attempt-install-mutation" },
         {
@@ -696,8 +692,7 @@ describe("Bitcoin app installer facade", () => {
     expect(
       fake.calls.filter(
         (call) =>
-          call.type === "run-action" &&
-          call.action?.kind === "install-bitcoin",
+          call.type === "run-action" && call.action?.kind === "install-bitcoin",
       ),
     ).toHaveLength(1);
     await installer.dispose();
@@ -986,8 +981,12 @@ describe("Bitcoin app installer facade", () => {
       code: "internal",
       phase: "failed",
     });
-    expect(hostileClock.clearTimeout).toHaveBeenCalledTimes(2);
+    expect(hostileClock.clearTimeout).toHaveBeenCalledTimes(6);
     expect(scheduledDurations).toEqual([
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.discovery,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.genuine,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.inspect,
       100,
       PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
     ]);
@@ -1047,10 +1046,7 @@ describe("Bitcoin app installer facade", () => {
   });
 
   it("snapshot-isolates listeners and permanently absorbs disposal", async () => {
-    const fake = queueSuccessfulPreparation(
-      new ScriptedDmk(systemClock),
-      true,
-    );
+    const fake = queueSuccessfulPreparation(new ScriptedDmk(systemClock), true);
     const installer = createInstaller(fake);
     const observed: BitcoinInstallerEvent[] = [];
     const first = vi.fn(() => {
@@ -1234,62 +1230,70 @@ describe("Bitcoin app installer facade", () => {
         "checking-genuine",
         "checking-bitcoin-app",
         "ready-to-install",
-      ] as const)("wins from the %s transition listener", async (targetPhase) => {
-        const fake = queueSuccessfulPreparation(
-          new ScriptedDmk(systemClock),
-          true,
-        );
-        const installer = createInstaller(fake);
-        const events: BitcoinInstallerEvent[] = [];
-        let disposal: Promise<void> | undefined;
-        installer.subscribe((event) => {
-          events.push(event);
-          if (event.phase !== targetPhase) return;
-          if (terminalAction === "cancel") {
-            installer.cancel();
-          } else {
-            disposal = installer.dispose();
-          }
-        });
+      ] as const)(
+        "wins from the %s transition listener",
+        async (targetPhase) => {
+          const fake = queueSuccessfulPreparation(
+            new ScriptedDmk(systemClock),
+            true,
+          );
+          const installer = createInstaller(fake);
+          const events: BitcoinInstallerEvent[] = [];
+          let disposal: Promise<void> | undefined;
+          installer.subscribe((event) => {
+            events.push(event);
+            if (event.phase !== targetPhase) return;
+            if (terminalAction === "cancel") {
+              installer.cancel();
+            } else {
+              disposal = installer.dispose();
+            }
+          });
 
-        await expect(installer.prepare()).rejects.toMatchObject({
-          code: "cancelled",
-          phase: targetPhase,
-        });
-        await disposal;
+          await expect(installer.prepare()).rejects.toMatchObject({
+            code: "cancelled",
+            phase: targetPhase,
+          });
+          await disposal;
 
-        expect(events.at(-1)).toEqual({
-          phase: terminalAction === "cancel" ? "cancelled" : "disposed",
-        });
-        expect(fake.resources()).toMatchObject({
-          connectCount:
-            targetPhase === "selecting-device" ||
-            targetPhase === "connecting"
-              ? 0
-              : 1,
-          disconnectCount:
-            targetPhase === "checking-genuine" ||
-            targetPhase === "checking-bitcoin-app" ||
-            targetPhase === "ready-to-install"
+          expect(events.at(-1)).toEqual({
+            phase: terminalAction === "cancel" ? "cancelled" : "disposed",
+          });
+          expect(fake.resources()).toMatchObject({
+            connectCount:
+              targetPhase === "selecting-device" || targetPhase === "connecting"
+                ? 0
+                : 1,
+            disconnectCount:
+              targetPhase === "checking-genuine" ||
+              targetPhase === "checking-bitcoin-app" ||
+              targetPhase === "ready-to-install"
+                ? 1
+                : 0,
+            closeCount: 0,
+            activeSubscriptions: 0,
+            scheduledTimers: 0,
+          });
+          expect(fake.resources().actionCount).toBe(
+            targetPhase === "checking-bitcoin-app"
               ? 1
-              : 0,
-          closeCount: 0,
-          activeSubscriptions: 0,
-          scheduledTimers: 0,
-        });
-        expect(fake.resources().actionCount).toBe(
-          targetPhase === "checking-bitcoin-app"
-            ? 1
-            : targetPhase === "ready-to-install"
-              ? 2
-              : 0,
-        );
-        if (terminalAction === "cancel") await installer.dispose();
-      });
+              : targetPhase === "ready-to-install"
+                ? 2
+                : 0,
+          );
+          if (terminalAction === "cancel") await installer.dispose();
+        },
+      );
     },
   );
 
-  it.each(["selecting-device", "connecting", "checking-genuine", "checking-bitcoin-app", "ready-to-install"] as const)(
+  it.each([
+    "selecting-device",
+    "connecting",
+    "checking-genuine",
+    "checking-bitcoin-app",
+    "ready-to-install",
+  ] as const)(
     "cancels once from %s and ignores late work",
     async (targetPhase) => {
       const fake = new ScriptedDmk(systemClock);
@@ -1395,7 +1399,7 @@ describe("Bitcoin app installer facade", () => {
     },
   );
 
-  it("pins the non-abortable never-settling connect cleanup limitation", async () => {
+  it("settles publicly but quarantines a non-abortable never-settling connect", async () => {
     const fake = new ScriptedDmk(systemClock)
       .queueDiscovery([{ type: "next", value: device }])
       .queueConnect({ type: "never" });
@@ -1421,8 +1425,13 @@ describe("Bitcoin app installer facade", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(preparationSettled).toBe(false);
-    expect(disposalSettled).toBe(false);
+    await expect(disposal).resolves.toBeUndefined();
+    await expect(preparation).rejects.toMatchObject({
+      code: "cancelled",
+      phase: "connecting",
+    });
+    expect(preparationSettled).toBe(true);
+    expect(disposalSettled).toBe(true);
     expect(fake.resources()).toMatchObject({
       connectCount: 1,
       disconnectCount: 0,
@@ -1439,5 +1448,27 @@ describe("Bitcoin app installer facade", () => {
         "must fit the platform timer range",
       );
     }
+  });
+
+  it("rejects non-callable listeners before retaining them", async () => {
+    const installer = createInstaller(new ScriptedDmk(systemClock));
+
+    expect(() => installer.subscribe(null as never)).toThrow(
+      "The installer listener must be callable.",
+    );
+
+    await installer.dispose();
+  });
+
+  it("constructs safely with the default capability probe before any operation", async () => {
+    const installer = createBitcoinAppInstallerCore({
+      createPort: () => new ScriptedDmk(systemClock),
+    });
+    const events: BitcoinInstallerEvent[] = [];
+    installer.subscribe((event) => events.push(event));
+
+    await installer.dispose();
+
+    expect(events).toEqual([{ phase: "disposed" }]);
   });
 });

@@ -41,6 +41,8 @@ rechecked on the final commit and packed tarball.
 | Model authority              | `verified-static` | The compiled production allowlist is implemented and empty. All known and unknown models fail closed.                                           |
 | Service authorization marker | `verified-static` | Internal production-shaped service configuration remains explicitly `unapproved`; release assertion remains fail-closed.                        |
 | Generic authority exclusions | `verified-static` | Public contract/artifact scan excludes app name, provider/endpoint, raw action, transport, SDK, APDU, inventory, identifier, and test seams.    |
+| SDK contract admission       | `verified-static` | The required path rejects missing provenance; guards accept the blocked state only under the private `0.0.0`/no-changeset lock.                 |
+| Contract network policy      | `verified-static` | Loopback-only/DNS-deny interception self-tests with inert adapters; a real SDK run and OS/container isolation remain absent.                    |
 
 The exact npm artifact is not yet reconciled to reviewed immutable upstream
 source. Version strings and lock integrity alone do not close that gap.
@@ -67,25 +69,26 @@ Run every row on the exact clean candidate commit with Node/npm and runner/image
 identity recorded. A release job must fail when a required offline/browser
 contract is absent or skipped.
 
-| Required evidence                                                          | Canonical/current command or required harness                                    | Status                     | Closure requirement                                                                                                                                                                              |
-| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Package lint, type, unit/scenario, private, build, artifact, and consumers | `npm run ci --workspace=@caravan/ledger`                                         | `pending` final-commit run | Immutable CI link and complete output for the exact commit/tarball. The package CI composes the runnable private gates and package gates below, but excludes the native gate.                    |
-| Unit/named lifecycle and race scenarios                                    | `npm test --workspace=@caravan/ledger`                                           | `pending` final-commit run | Include finalizer, HID, recovery, and other named `src` scenarios with sanitized deterministic traces; the cross-package handoff is the separate row below.                                      |
-| Critical/module and package branch coverage                                | No approved enforcing script is currently indexed                                | `pending`                  | Enforce reviewed critical-module targets and at least the agreed package target; record exclusions, owner, and expiry rather than gaming coverage.                                               |
-| Bounded lifecycle model suite                                              | `npm run test:model --workspace=@caravan/ledger`                                 | `pending` final-commit run | Deterministic bounded sequences drive the real facade, compare a reference model, minimize sanitized failures, and prove minimization on an intentionally illegal symbolic trace.                |
-| Immutable offline real-SDK/mock contract                                   | No approved source/image/digest and no mandatory no-skip command are recorded    | `pending`                  | Record immutable upstream source, mock source/image digest, behavior contract, no-live-network proof, and a release-mode skip failure.                                                           |
-| Synthetic browser behavior and packed browser build                        | `npm run test:browser --workspace=@caravan/ledger`                               | `pending` final-commit run | Run deterministic activation/lifecycle UI tests, then rebuild, pack, SSR-check, and bundle the private lab from the packed browser entry without treating it as native UI.                       |
-| Native Chromium/WebHID UI                                                  | `npm run test:browser-native --workspace=@caravan/ledger`                        | `blocked-external`         | The default `NOT RUN` state and the opted-in missing-exact-browser state both fail nonzero. Pin the browser revision/image and OS, opt in explicitly, and record native chooser/WebHID evidence. |
-| Packed public API/artifact negative checks                                 | `npm run test:artifact --workspace=@caravan/ledger`                              | `pending` final-commit run | Exact declarations/runtime/files/dependencies plus forbidden identifiers, endpoints, SDK types, sourcemaps, and secrets on the final tarball.                                                    |
-| Clean legacy and modern consumer compatibility                             | `npm run test:consumer --workspace=@caravan/ledger`                              | `pending` final-commit run | Both disposable runners install the exact tarball. The legacy lane pins TypeScript 4.6.4/Webpack 5.64.4 and both lanes enforce their reviewed export/dependency/bundle rules.                    |
-| Cross-package separate-click/no-overlap handoff                            | `npm run test:handoff --workspace=@caravan/ledger`                               | `pending` final-commit run | Prove management release/reconnect gating, a distinct signing click, no runtime installer-to-wallet dependency, and close-once WebUSB ownership.                                                 |
-| SSR/Node inert import                                                      | `npm run test:import --workspace=@caravan/ledger`                                | `pending` final-commit run | No browser globals, permission/device/runtime/network work on import/factory; unsupported facade remains finite.                                                                                 |
-| Documentation/TypeDoc                                                      | `npm run docs` plus repository-approved Markdown/link/forbidden-copy checks      | `pending` final-commit run | Generated API includes the direct Ledger package entry and excludes nested private consumer fixtures; examples use only public imports and links/copy remain reviewed.                           |
-| Wallet transport regression                                                | Wallet package test/build commands selected by Caravan CI                        | `pending`                  | Exact owned WebUSB transport close-once/no-overlap suite passes.                                                                                                                                 |
-| Coordinator/downstream regression                                          | `npm run build:coordinator` and required coordinator tests/e2e where selected    | `pending`                  | No consumer API/bundle/lifecycle regression; no Trefoil modification is implied.                                                                                                                 |
-| Root regression                                                            | `npm run ci`                                                                     | `pending`                  | Complete root build/lint/test on exact commit with no waived failure.                                                                                                                            |
-| Changeset/release safety                                                   | `npx changeset status --since=origin/main`, workflow/config review, pack dry-run | `pending`                  | Prove private package cannot publish; do not add a publishable Changeset while this gate is incomplete.                                                                                          |
-| Dependency/license/SBOM/provenance                                         | Approved repository tooling not yet recorded                                     | `pending`                  | Exact shipped transitive graph, licenses/obligations, SBOM, npm integrity, immutable source mapping, and provenance evidence.                                                                    |
+| Required evidence                                                          | Canonical/current command or required harness                                         | Status                     | Closure requirement                                                                                                                                                                                  |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package lint, type, unit/scenario, private, build, artifact, and consumers | `npm run ci --workspace=@caravan/ledger`                                              | `pending` final-commit run | Immutable CI link and complete output for the exact commit/tarball. The package CI composes the runnable private gates and package gates below, but excludes the native gate.                        |
+| Unit/named lifecycle and race scenarios                                    | `npm test --workspace=@caravan/ledger`                                                | `pending` final-commit run | Include finalizer, HID, recovery, and other named `src` scenarios with sanitized deterministic traces; the cross-package handoff is the separate row below.                                          |
+| Critical/module and package branch coverage                                | `npm run test:coverage --workspace=@caravan/ledger`                                   | `pending` final-commit run | The command enforces at least 95% package branch coverage without ignore annotations; retain 100% coverage on the small reviewed mapping/policy modules and record any future exclusion explicitly.  |
+| Bounded lifecycle model suite                                              | `npm run test:model --workspace=@caravan/ledger`                                      | `pending` final-commit run | Deterministic bounded sequences drive the real facade, compare a reference model, minimize sanitized failures, and prove minimization on an intentionally illegal symbolic trace.                    |
+| Immutable offline real-SDK/mock contract                                   | `npm run test:ledger-contract --workspace=@caravan/ledger`                            | `blocked-external`         | Required fails without approved provenance and still fails until a reviewed real runner exists. External source, mock, fixture, and network evidence remain required.                                |
+| Synthetic browser behavior and packed browser build                        | `npm run test:browser --workspace=@caravan/ledger`                                    | `pending` final-commit run | Run deterministic activation/lifecycle UI tests, then rebuild, pack, SSR-check, and bundle the private lab from the packed browser entry without treating it as native UI.                           |
+| Playwright Chromium with injected WebHID facade                            | `CARAVAN_LEDGER_RUN_NATIVE=1 npm run test:browser-native --workspace=@caravan/ledger` | `pending` final-commit run | CI installs the browser revision managed by exact `@playwright/test` `1.60.0`; the gate fails nonzero when not opted in or when that binary is absent. Record exact browser and runner identities.   |
+| Real native chooser and physical WebHID behavior                           | Authorized browser/device matrix harness not yet approved                             | `blocked-external`         | The synthetic facade cannot establish chooser, device, privacy, network, or OS-handle behavior. Written authorization and a pinned browser/OS/device matrix remain required.                         |
+| Packed public API/artifact negative checks                                 | `npm run test:artifact --workspace=@caravan/ledger`                                   | `pending` final-commit run | Exact declarations/runtime/files/dependencies plus forbidden identifiers, endpoints, SDK types, sourcemaps, and secrets on the final tarball.                                                        |
+| Clean legacy and modern consumer compatibility                             | `npm run test:consumer --workspace=@caravan/ledger`                                   | `pending` final-commit run | Both disposable runners install the exact tarball. The legacy lane pins TypeScript 4.6.4/Webpack 5.64.4 and both lanes enforce their reviewed export/dependency/bundle rules.                        |
+| Cross-package separate-click/no-overlap handoff                            | `npm run test:handoff --workspace=@caravan/ledger`                                    | `pending` final-commit run | Prove management release/reconnect gating, a distinct signing click, no runtime installer-to-wallet dependency, and close-once WebUSB ownership.                                                     |
+| SSR/Node inert import                                                      | `npm run test:import --workspace=@caravan/ledger`                                     | `pending` final-commit run | No browser globals, permission/device/runtime/network work on import/factory; unsupported facade remains finite.                                                                                     |
+| Documentation/TypeDoc                                                      | `npm run docs` plus `npm run test:documentation --workspace=@caravan/ledger`          | `pending` final-commit run | Generated API includes the direct Ledger package entry and excludes nested private consumer fixtures; packed-package examples compile with only public imports and local links/copy remain reviewed. |
+| Wallet transport regression                                                | Wallet package test/build commands selected by Caravan CI                             | `pending`                  | Exact owned WebUSB transport close-once/no-overlap suite passes.                                                                                                                                     |
+| Coordinator/downstream regression                                          | `npm run build:coordinator` and required coordinator tests/e2e where selected         | `pending`                  | No consumer API/bundle/lifecycle regression; no Trefoil modification is implied.                                                                                                                     |
+| Root regression                                                            | `npm run ci`                                                                          | `pending`                  | Complete root build/lint/test on exact commit with no waived failure.                                                                                                                                |
+| Changeset/release safety                                                   | `npx changeset status --since=origin/main`, workflow/config review, pack dry-run      | `pending`                  | Prove private package cannot publish; do not add a publishable Changeset while this gate is incomplete.                                                                                              |
+| Dependency/license/SBOM/provenance                                         | Approved repository tooling not yet recorded                                          | `pending`                  | Exact shipped transitive graph, licenses/obligations, SBOM, npm integrity, immutable source mapping, and provenance evidence.                                                                        |
 
 `npm run test:private --workspace=@caravan/ledger` composes the model, privacy,
 handoff, synthetic browser, and packed browser-build checks. It deliberately
@@ -95,6 +98,17 @@ must remain a visible nonzero gate state, not a silently skipped success.
 package path reuses that build for both disposable consumer runners. Package CI
 also reuses the build performed by its immediately preceding packed browser-lab
 gate instead of rebuilding the same working tree.
+
+`npm run test:ledger-contract:guard --workspace=@caravan/ledger` is an admission
+guard in ordinary CI, not the SDK contract. In the current blocked state it can
+only report that runtime pins, artifact exclusion, network-deny interception,
+and the private `0.0.0`/no-changeset release lock are intact; its stable output
+states `ledger_release=DENIED`, `contract=BLOCKED_EXTERNAL`, and
+`required_run=NOT_RUN`. A Ledger canary or stable transition must use the
+non-skippable `test:ledger-contract` command.
+`npm run test:ledger-contract:release-guard --workspace=@caravan/ledger` permits
+unrelated Caravan releases while those Ledger locks remain closed, but routes
+any public/versioned/changeset transition to the required failing command.
 
 The repository requires Node 24 and npm `11.14.1`; CI currently selects Node 24
 by major line rather than recording an exact patch. The final evidence must
@@ -109,7 +123,7 @@ workflow declaration.
 | Vendor WebHID `@sentry/minimal` behavior                 | `blocked-external`            | The same privacy command characterizes the resolved WebHID `1.2.4`/Sentry `6.19.7` without a client; the authoring tree observes two host-Hub captures of a wrapper retaining the raw browser error. Exact packed host-client payload/destination evidence and named privacy/authorization approval remain. |
 | Exact Ledger HTTPS/WSS/provider/origin/CSP configuration | `blocked-external`            | Written authorization and controlled production configuration are absent. Observed SDK defaults are not permission.                                                                                                                                                                                         |
 | Browser secret                                           | `verified-static` design rule | None is accepted. If authorization requires one, stop and redesign; never embed it.                                                                                                                                                                                                                         |
-| No-live fallback in offline/browser tests                | `pending`                     | Harness must fail closed on missing mock/service and deny unexpected network, rather than silently reaching production.                                                                                                                                                                                     |
+| No-live fallback in offline SDK admission                | `verified-static` enforcement | Required fails before execution without immutable mock evidence. Process-local interception denies DNS/non-loopback requests before inert adapters; real-run and OS-firewall evidence remain absent.                                                                                                        |
 
 A functional pass cannot downgrade a telemetry, privacy, provenance, or network
 finding.
@@ -124,11 +138,17 @@ and publication:
    endpoints/provider, automated and physical testing permissions, traffic,
    privacy/telemetry, branding/support, monitoring, and incident obligations are
    not approved.
-2. **Immutable SDK/mock contract:** reviewed upstream source and resolved npm
-   artifacts are not reconciled; no approved mock source/image digest or
-   mandatory offline contract run is recorded.
-3. **Real browser/native UI:** no pinned browser binary/image or approved native
-   chooser/WebHID/privacy/network run is recorded.
+2. **Immutable SDK/mock contract:** the admission and no-skip command are
+   implemented and remain nonzero as designed. Reviewed upstream source and
+   resolved npm artifacts are not reconciled; no approved mock source/image,
+   rebuild, fixture, runner, or network-isolation digest and no real offline
+   contract run are recorded. Pinned DMK `1.7.1` also represents both a genuine
+   empty app inventory and stream completion without a result as
+   `installedApps: []`; a reviewed SDK patch/upgrade must create a trusted
+   distinction before the Bitcoin-absent contract can pass.
+3. **Real browser/native UI:** the exact Playwright dependency and its managed
+   Chromium exercise the injected WebHID facade, but no approved native chooser,
+   physical device, privacy/network, or pinned runner-image matrix is recorded.
 4. **Vendor Sentry:** the authoring-tree resolved-runtime characterization
    observes duplicate host-Hub capture and raw-error retention. The exact packed
    bundle with a representative host client,
@@ -136,6 +156,9 @@ and publication:
    reviewed mitigation remain absent.
 5. **Physical support matrix:** the compiled model allowlist is empty and no
    model/firmware/browser/OS row has authorized physical evidence or sign-off.
+   The conservative adapter rejects ambiguous `installedApps: []`, so a genuine
+   zero-app device cannot currently prepare; simply accepting the empty array
+   would also accept a missing SDK result and is not an approved correction.
 6. **Named ownership/enforcement:** all roles in
    [maintenance](./maintenance.md) are unassigned and no verified required-review
    mechanism is recorded.

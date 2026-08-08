@@ -5,7 +5,7 @@ const test = base.extend<{ isolationViolations: string[] }>({
     async ({ page }, use) => {
       const violations: string[] = [];
       page.on("console", (message) => {
-        violations.push(`console.${message.type()}: ${message.text()}`);
+        violations.push(`unexpected console.${message.type()}`);
       });
       page.on("pageerror", (error) => {
         violations.push(`pageerror: ${error.name}`);
@@ -14,14 +14,20 @@ const test = base.extend<{ isolationViolations: string[] }>({
         const url = new URL(request.url());
         if (
           (url.protocol === "http:" || url.protocol === "https:") &&
-          url.hostname !== "127.0.0.1" &&
-          url.hostname !== "localhost"
+          url.hostname !== "127.0.0.1"
         ) {
-          violations.push(`non-loopback request: ${url.origin}`);
+          violations.push("non-loopback HTTP request");
         }
       });
       page.on("requestfailed", (request) => {
-        violations.push(`request failed: ${request.url()}`);
+        const protocol = new URL(request.url()).protocol;
+        violations.push(`request failed over ${protocol}`);
+      });
+      page.on("websocket", (socket) => {
+        const url = new URL(socket.url());
+        if (url.hostname !== "127.0.0.1") {
+          violations.push("non-loopback WebSocket connection");
+        }
       });
       page.on("dialog", (dialog) => {
         violations.push(`unexpected dialog: ${dialog.type()}`);

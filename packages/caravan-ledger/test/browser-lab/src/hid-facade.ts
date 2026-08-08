@@ -49,7 +49,12 @@ function installHid(value: unknown): void {
   });
 }
 
-if (fixture === "malformed") {
+if (fixture === "no-hid") {
+  // Chromium itself exposes WebHID on supported platforms. Shadow it so this
+  // fixture models an actually absent API instead of inheriting the browser's
+  // native implementation.
+  installHid(undefined);
+} else if (fixture === "malformed") {
   installHid({ getDevices: true, requestDevice: true });
 } else if (fixture === "throwing") {
   Object.defineProperty(navigator, "hid", {

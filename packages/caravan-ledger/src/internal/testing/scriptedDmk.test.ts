@@ -309,4 +309,104 @@ describe("ScriptedDmk", () => {
     );
     expect(fake.resources().actionCount).toBe(0);
   });
+
+  it("rejects missing connection and lifecycle scripts synchronously", () => {
+    const fake = new ScriptedDmk(systemClock);
+
+    expect(() => fake.connect(device)).toThrow(
+      "No connection script is queued.",
+    );
+    expect(() => fake.observeSessionLifecycle(session)).toThrow(
+      "No session lifecycle script is queued.",
+    );
+  });
+
+  it("rejects a second subscription to the same scripted operation", () => {
+    const fake = new ScriptedDmk(systemClock).queueDiscovery([
+      { type: "never" },
+    ]);
+    const operation = fake.startDiscovery();
+    const target = observer<DmkDiscoveredDevice>();
+    attachPort(target);
+
+    operation.stream.subscribe(target.port);
+
+    expect(() => operation.stream.subscribe(target.port)).toThrow(
+      "can only be subscribed once",
+    );
+  });
+
+  it("rejects invalid stream and promise delays before scheduling host timers", () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([
+        { type: "next", value: device, atMs: Number.NaN },
+      ])
+      .queueConnect({ type: "resolve", value: session, afterMs: -1 });
+    const target = observer<DmkDiscoveredDevice>();
+    attachPort(target);
+
+    expect(() => fake.startDiscovery().stream.subscribe(target.port)).toThrow(
+      "Script times must be finite and non-negative.",
+    );
+    expect(() => fake.connect(device)).toThrow(
+      "Script times must be finite and non-negative.",
+    );
+  });
+
+  it("ignores a cleared timer callback retained by a hostile clock", () => {
+    const retainingClock = {
+      ...systemClock,
+      clearTimeout: vi.fn(),
+    };
+    const fake = new ScriptedDmk(retainingClock).queueAction("open-bitcoin", [
+      {
+        type: "next",
+        value: { status: "completed", output: { appOpened: true } },
+        atMs: 5,
+      },
+    ]);
+    const target = observer<DmkActionState<"open-bitcoin">>();
+    attachPort(target);
+    const operation = fake.runAction(session, { kind: "open-bitcoin" });
+    operation.stream.subscribe(target.port);
+
+    operation.cancel();
+    vi.advanceTimersByTime(5);
+
+    expect(target.values).toEqual([]);
+    expect(retainingClock.clearTimeout).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a mutation marker injected into a non-install script", () => {
+    const fake = new ScriptedDmk(systemClock).queueAction("open-bitcoin", [
+      { type: "attempt-install-mutation" } as never,
+      {
+        type: "next",
+        value: { status: "completed", output: { appOpened: false } },
+      },
+    ]);
+    const target = observer<DmkActionState<"open-bitcoin">>();
+    attachPort(target);
+
+    fake
+      .runAction(session, { kind: "open-bitcoin" })
+      .stream.subscribe(target.port);
+
+    expect(target.values).toEqual([
+      { status: "completed", output: { appOpened: false } },
+    ]);
+    expect(
+      fake.calls.filter((call) => call.type === "attempt-install-mutation"),
+    ).toHaveLength(0);
+  });
+
+  it("supports an explicitly scripted synchronous promise throw", () => {
+    const thrown = new Error("scripted synchronous connection failure");
+    const fake = new ScriptedDmk(systemClock).queueConnect({
+      type: "throw",
+      error: thrown,
+    });
+
+    expect(() => fake.connect(device)).toThrow(thrown);
+  });
 });

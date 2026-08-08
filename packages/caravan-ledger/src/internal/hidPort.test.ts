@@ -274,4 +274,119 @@ describe("browser HID port", () => {
       expect.any(Function),
     );
   });
+
+  it("accepts a callable navigator and rejects a malformed HID manager", async () => {
+    const manager = makeManager(() => []);
+    const callableNavigator = Object.assign(() => undefined, { hid: manager });
+    vi.stubGlobal("navigator", callableNavigator);
+
+    await expect(createBrowserHidPort().getGrantedDevices()).resolves.toEqual(
+      [],
+    );
+
+    vi.stubGlobal("navigator", { hid: null });
+    await expect(
+      createBrowserHidPort().getGrantedDevices(),
+    ).rejects.toBeInstanceOf(HidPortUnavailableError);
+  });
+
+  it("normalizes a throwing navigator HID getter to unavailable", async () => {
+    const navigatorValue = Object.defineProperty({}, "hid", {
+      configurable: true,
+      get() {
+        throw new Error("host browser getter failed");
+      },
+    });
+    vi.stubGlobal("navigator", navigatorValue);
+
+    await expect(
+      createBrowserHidPort().getGrantedDevices(),
+    ).rejects.toBeInstanceOf(HidPortUnavailableError);
+  });
+
+  it("fails closed for non-device entries, invalid vendors, and non-array reads", async () => {
+    for (const readDevices of [
+      () => [null],
+      () => [{ vendorId: -1 }],
+      () => ({ 0: { vendorId: 0x2c97 }, length: 1 }),
+    ]) {
+      const manager = makeManager(readDevices);
+      installNavigator(manager);
+      await expect(
+        createBrowserHidPort().getGrantedDevices(),
+      ).rejects.toBeInstanceOf(HidPortUnavailableError);
+    }
+  });
+
+  it("fails closed for sparse or throwing native device arrays", async () => {
+    const sparse = new Array(1);
+    installNavigator(makeManager(() => sparse));
+    await expect(
+      createBrowserHidPort().getGrantedDevices(),
+    ).rejects.toBeInstanceOf(HidPortUnavailableError);
+
+    const throwing = new Proxy(
+      [{ vendorId: 0x2c97, productId: 0x4000, opened: true }],
+      {
+        get(target, property, receiver) {
+          if (property === "0") throw new Error("native collection changed");
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    installNavigator(makeManager(() => throwing));
+    await expect(
+      createBrowserHidPort().getGrantedDevices(),
+    ).rejects.toBeInstanceOf(HidPortUnavailableError);
+  });
+
+  it("rejects non-callable subscribers before attaching browser listeners", () => {
+    const manager = makeManager(() => []);
+    installNavigator(manager);
+    const port = createBrowserHidPort();
+
+    expect(() => port.subscribeToDeviceChanges(null as never)).toThrow(
+      "The HID change listener must be callable.",
+    );
+    expect(manager.addEventListener).not.toHaveBeenCalled();
+  });
+
+  it("ignores browser callbacks retained after local unsubscription", () => {
+    const retained = new Map<"connect" | "disconnect", BrowserChangeListener>();
+    const manager = makeManager(() => []);
+    manager.addEventListener.mockImplementation(
+      (type: "connect" | "disconnect", listener: BrowserChangeListener) => {
+        retained.set(type, listener);
+      },
+    );
+    manager.removeEventListener.mockImplementation(() => undefined);
+    installNavigator(manager);
+    const port = createBrowserHidPort();
+    const listener = vi.fn();
+
+    const unsubscribe = port.subscribeToDeviceChanges(listener);
+    unsubscribe();
+    retained.get("connect")?.({
+      device: { vendorId: 0x2c97, productId: 0x4000, opened: true },
+    });
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("contains a failure while attaching the first browser listener", () => {
+    const manager = makeManager(() => []);
+    manager.addEventListener.mockImplementation(() => {
+      throw new Error("browser listener boundary failed");
+    });
+    installNavigator(manager);
+
+    expect(() =>
+      createBrowserHidPort().subscribeToDeviceChanges(() => undefined),
+    ).toThrow(HidPortUnavailableError);
+    expect(manager.removeEventListener).toHaveBeenCalledTimes(1);
+    expect(manager.removeEventListener).toHaveBeenCalledWith(
+      "disconnect",
+      expect.any(Function),
+    );
+  });
 });

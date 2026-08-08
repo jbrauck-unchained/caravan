@@ -56,6 +56,7 @@ docs/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+/packages/caravan-ledger/test-results/
 playwright-report
 #e2e
 /apps/coordinator/test-results
@@ -63,4 +64,3 @@ playwright-report
 /apps/coordinator/e2e/downloads
 /apps/coordinator/e2e/temp
 /apps/coordinator/e2e/uploads
-

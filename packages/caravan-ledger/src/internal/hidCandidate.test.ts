@@ -267,4 +267,61 @@ describe("HID release candidate selection", () => {
       ).toBe(true);
     },
   );
+
+  it("accepts callable opaque identities and rejects malformed containers", () => {
+    const callableIdentity = (() => undefined) as unknown as HidDeviceIdentity;
+    expect(
+      selectHidReleaseCandidate({
+        before: undefined,
+        after: [snapshot(callableIdentity, true)],
+        modelId: "nanoX",
+      }),
+    ).toMatchObject({ kind: "unique", identity: callableIdentity });
+
+    expect(
+      selectHidReleaseCandidate({
+        before: [],
+        after: {} as readonly HidDeviceSnapshot[],
+        modelId: "nanoX",
+      }),
+    ).toEqual({ kind: "unavailable" });
+
+    const sparse = new Array(1) as readonly HidDeviceSnapshot[];
+    expect(
+      selectHidReleaseCandidate({
+        before: [],
+        after: sparse,
+        modelId: "nanoX",
+      }),
+    ).toEqual({ kind: "unavailable" });
+  });
+
+  it("rejects primitive records and invalid own snapshot fields", () => {
+    for (const malformed of [
+      null,
+      {
+        identity: null,
+        vendorId: LEDGER_HID_VENDOR_ID,
+        productId: 0x4000,
+        opened: true,
+      },
+    ]) {
+      expect(
+        selectHidReleaseCandidate({
+          before: [],
+          after: [malformed] as never,
+          modelId: "nanoX",
+        }),
+      ).toEqual({ kind: "unavailable" });
+    }
+  });
+
+  it("does not match a non-Ledger vendor even when its product ID matches", () => {
+    expect(
+      hidSnapshotMatchesModel(
+        snapshot(identity(), true, 0x4000, 0x1234),
+        "nanoX",
+      ),
+    ).toBe(false);
+  });
 });

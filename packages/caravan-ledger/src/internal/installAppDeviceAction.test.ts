@@ -19,16 +19,16 @@ function inputFor(app: unknown): InstallInput {
   return { input: { deviceInfo: {}, app } } as InstallInput;
 }
 
-function stubBaseDependencies(
-  installApp: Dependencies["installApp"],
-): void {
+function stubBaseDependencies(installApp: Dependencies["installApp"]): void {
   vi.spyOn(
     InstallAppDeviceAction.prototype,
     "extractDependencies",
   ).mockReturnValue({ installApp } as Dependencies);
 }
 
-async function observableError(observable: ReturnType<Dependencies["installApp"]>) {
+async function observableError(
+  observable: ReturnType<Dependencies["installApp"]>,
+) {
   return firstValueFrom(observable).catch((error) => error);
 }
 
@@ -67,11 +67,26 @@ describe("Bitcoin-only pinned SDK action", () => {
   });
 
   it.each([
+    ["primitive request", null],
     ["missing app", { input: { deviceInfo: {} } }],
     ["missing version", { input: { deviceInfo: {}, app: {} } }],
-    ["wrong case", { input: { deviceInfo: {}, app: { versionName: "bitcoin" } } }],
-    ["trailing space", { input: { deviceInfo: {}, app: { versionName: "Bitcoin " } } }],
-    ["inherited", { input: { deviceInfo: {}, app: Object.create({ versionName: "Bitcoin" }) } }],
+    [
+      "wrong case",
+      { input: { deviceInfo: {}, app: { versionName: "bitcoin" } } },
+    ],
+    [
+      "trailing space",
+      { input: { deviceInfo: {}, app: { versionName: "Bitcoin " } } },
+    ],
+    [
+      "inherited",
+      {
+        input: {
+          deviceInfo: {},
+          app: Object.create({ versionName: "Bitcoin" }),
+        },
+      },
+    ],
   ])("blocks %s before the mutation marker", async (_name, invalidInput) => {
     const delegated = vi.fn(() => NEVER);
     stubBaseDependencies(delegated as Dependencies["installApp"]);
@@ -166,6 +181,13 @@ describe("Bitcoin-only pinned SDK action", () => {
     expect(action.mutationAttempted()).toBe(true);
   });
 
+  it("does not accept callable or primitive values as package-created repeat blockers", () => {
+    expect(isBitcoinInstallVerificationRequiredError(() => undefined)).toBe(
+      false,
+    );
+    expect(isBitcoinInstallVerificationRequiredError(null)).toBe(false);
+  });
+
   it("leaves the marker true when the original dependency throws synchronously", () => {
     const delegatedError = new Error("private-original-sync-error-canary");
     const delegated = vi.fn(() => {
@@ -202,12 +224,12 @@ describe("Bitcoin-only pinned SDK action", () => {
     const action = new BitcoinOnlyInstallAppDeviceAction();
     const extract = vi.spyOn(action, "extractDependencies");
 
-    expect(packageManifest.dependencies?.["@ledgerhq/device-management-kit"]).toBe(
-      "1.7.1",
-    );
+    expect(
+      packageManifest.dependencies?.["@ledgerhq/device-management-kit"],
+    ).toBe("1.7.1");
     expect(installedManifest.version).toBe("1.7.1");
     expect(source).toContain('from "@ledgerhq/device-management-kit"');
-    expect(source).not.toContain('@ledgerhq/device-management-kit/');
+    expect(source).not.toContain("@ledgerhq/device-management-kit/");
     expect(() => action.makeStateMachine({} as never)).not.toThrow();
     expect(extract).toHaveBeenCalledOnce();
   });

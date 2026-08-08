@@ -166,6 +166,17 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 class ManualClock implements Clock {
   monotonicTime = 0;
 
@@ -209,6 +220,75 @@ class ManualClock implements Clock {
   }
 }
 
+const EDGE_POLICY = Object.freeze({
+  snapshotTimeoutMs: 11,
+  disconnectTimeoutMs: 12,
+  pollIntervalMs: 13,
+  reconnectQuietPeriodMs: 17,
+  releaseDeadlineMs: 101,
+});
+
+class ProgrammableClock implements Clock {
+  readonly monotonicValues: Array<number | Error>;
+
+  readonly timers: Array<{
+    readonly callback: () => void;
+    cleared: boolean;
+    readonly delayMs: number;
+    readonly handle: object;
+  }> = [];
+
+  readonly synchronousDelays = new Set<number>();
+
+  onSchedule: ((delayMs: number) => void) | undefined;
+
+  onClear: ((delayMs: number) => void) | undefined;
+
+  constructor(values: Array<number | Error> = [0]) {
+    this.monotonicValues = values;
+  }
+
+  now(): number {
+    return 0;
+  }
+
+  monotonicNow(): number {
+    const value =
+      this.monotonicValues.length > 1
+        ? this.monotonicValues.shift()
+        : this.monotonicValues[0];
+    if (value instanceof Error) throw value;
+    return value ?? 0;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): ClockTimer {
+    const handle = Object.freeze({});
+    const timer = { callback, cleared: false, delayMs, handle };
+    this.timers.push(timer);
+    this.onSchedule?.(delayMs);
+    if (this.synchronousDelays.has(delayMs)) callback();
+    return handle as ClockTimer;
+  }
+
+  clearTimeout(timer: ClockTimer): void {
+    const entry = this.timers.find((candidate) => candidate.handle === timer);
+    if (entry) {
+      entry.cleared = true;
+      this.onClear?.(entry.delayMs);
+    }
+  }
+
+  fireByDelay(delayMs: number, includeCleared = false): void {
+    const entry = this.timers.find(
+      (candidate) =>
+        candidate.delayMs === delayMs && (includeCleared || !candidate.cleared),
+    );
+    if (!entry) throw new Error(`No timer has delay ${delayMs}.`);
+    entry.cleared = true;
+    entry.callback();
+  }
+}
+
 describe("HID release barrier", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -229,23 +309,26 @@ describe("HID release barrier", () => {
       "releaseDeadlineMs",
       PROVISIONAL_HID_RELEASE_POLICY.reconnectQuietPeriodMs,
     ],
-  ] as const)("rejects an invalid %s policy before observing HID", (key, value) => {
-    const port = new FakeHidPort(() => []);
+  ] as const)(
+    "rejects an invalid %s policy before observing HID",
+    (key, value) => {
+      const port = new FakeHidPort(() => []);
 
-    expect(() =>
-      createHidReleaseBarrier({
-        candidate: { kind: "none" },
-        clock: systemClock,
-        hidPort: port,
-        policy: {
-          ...PROVISIONAL_HID_RELEASE_POLICY,
-          [key]: value,
-        },
-      }),
-    ).toThrow("The HID release timing policy is invalid.");
-    expect(port.calls).toBe(0);
-    expect(port.listeners.size).toBe(0);
-  });
+      expect(() =>
+        createHidReleaseBarrier({
+          candidate: { kind: "none" },
+          clock: systemClock,
+          hidPort: port,
+          policy: {
+            ...PROVISIONAL_HID_RELEASE_POLICY,
+            [key]: value,
+          },
+        }),
+      ).toThrow("The HID release timing policy is invalid.");
+      expect(port.calls).toBe(0);
+      expect(port.listeners.size).toBe(0);
+    },
+  );
 
   it.each([
     ["non-object", null],
@@ -285,22 +368,25 @@ describe("HID release barrier", () => {
         opened: "yes",
       },
     ],
-  ] as const)("fails closed for a %s injected HID change record", async (_label, record) => {
-    const selected = identity();
-    const port = new FakeHidPort(() => [snapshot(selected, true)]);
-    const barrier = createHidReleaseBarrier({
-      candidate: uniqueCandidate(selected),
-      clock: systemClock,
-      hidPort: port,
-    });
-    await barrier.arm();
+  ] as const)(
+    "fails closed for a %s injected HID change record",
+    async (_label, record) => {
+      const selected = identity();
+      const port = new FakeHidPort(() => [snapshot(selected, true)]);
+      const barrier = createHidReleaseBarrier({
+        candidate: uniqueCandidate(selected),
+        clock: systemClock,
+        hidPort: port,
+      });
+      await barrier.arm();
 
-    port.emit({ type: "disconnect", device: record } as never);
+      port.emit({ type: "disconnect", device: record } as never);
 
-    await expect(barrier.wait()).resolves.toBe("unavailable");
-    expect(port.listeners.size).toBe(0);
-    expect(vi.getTimerCount()).toBe(0);
-  });
+      await expect(barrier.wait()).resolves.toBe("unavailable");
+      expect(port.listeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it("fails closed when an injected HID change accessor throws", async () => {
     const selected = identity();
@@ -322,6 +408,26 @@ describe("HID release barrier", () => {
     await expect(barrier.wait()).resolves.toBe("unavailable");
     expect(port.listeners.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("owns synchronous terminal change cleanup before subscription returns", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    port.onSubscribe = () => {
+      port.emit({ type: "unavailable" });
+    };
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: systemClock,
+      hidPort: port,
+    });
+
+    await barrier.arm();
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+    expect(port.unsubscribeCalls).toBe(1);
+    expect(port.listeners.size).toBe(0);
+    expect(port.calls).toBe(0);
   });
 
   it("fails closed when one poll repeats an in-memory HID identity", async () => {
@@ -1190,8 +1296,7 @@ describe("HID release barrier", () => {
         clearCounts.set(timer, (clearCounts.get(timer) ?? 0) + 1);
         if (
           !reentered &&
-          delays.get(timer) ===
-            PROVISIONAL_HID_RELEASE_POLICY.releaseDeadlineMs
+          delays.get(timer) === PROVISIONAL_HID_RELEASE_POLICY.releaseDeadlineMs
         ) {
           reentered = true;
           barrierReference.current?.cancel();
@@ -1272,6 +1377,576 @@ describe("HID release barrier", () => {
 
     expect(clock.cleared).toContain(0);
     expect(clock.active.size).toBe(0);
+  });
+
+  it("ignores non-Ledger snapshots while proving the selected device closed", async () => {
+    const selected = identity();
+    const unrelated = identity();
+    let read = 0;
+    const port = new FakeHidPort(() => {
+      read += 1;
+      return read === 1
+        ? [snapshot(selected, true), snapshot(unrelated, true, 0x4000, 0x1234)]
+        : [
+            snapshot(selected, false),
+            snapshot(unrelated, true, 0x4000, 0x1234),
+          ];
+    });
+    const clock = new ProgrammableClock([0, 1, 2, 3]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("released");
+  });
+
+  it.each([
+    ["a NaN reading", Number.NaN],
+    ["a negative reading", -1],
+    ["a throwing clock", new Error("monotonic clock failed")],
+  ])("fails unavailable before observation for %s", async (_label, reading) => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([reading]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+    expect(port.calls).toBe(0);
+  });
+
+  it("fails unavailable when the absolute deadline cannot be represented", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([Number.MAX_VALUE]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+    expect(port.calls).toBe(0);
+  });
+
+  it("fails unavailable when pre-wait quiet time cannot be represented", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => []);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([Number.MAX_VALUE]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await barrier.arm();
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("fails closed when the browser returns a non-callable unsubscribe token", async () => {
+    const selected = identity();
+    const port: HidPort = {
+      getGrantedDevices: () => Promise.resolve([snapshot(selected, true)]),
+      subscribeToDeviceChanges: () => null as never,
+    };
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock(),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await barrier.arm();
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("classifies an unavailable first capture against an already-owned deadline", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => new Error("snapshot read failed"));
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0, 1]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("fails unavailable when time becomes invalid after an unavailable first capture", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => new Error("snapshot read failed"));
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0, Number.NaN]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("lets the deadline classify an unavailable first capture", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0, EDGE_POLICY.releaseDeadlineMs]);
+    const port = new FakeHidPort(() => new Error("snapshot read failed"));
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("timed-out");
+  });
+
+  it("fails closed when an initial snapshot mutates the selected product", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true, 0x4001)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("fails unavailable when time becomes invalid after initial absence", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => []);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0, Number.NaN]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("reschedules a quiet timer that fires before monotonic quiet time elapses", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0, 1]);
+    const port = new FakeHidPort(() => []);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await barrier.arm();
+    clock.fireByDelay(EDGE_POLICY.reconnectQuietPeriodMs);
+    expect(
+      clock.timers.some(
+        (timer) =>
+          !timer.cleared &&
+          timer.delayMs === EDGE_POLICY.reconnectQuietPeriodMs - 1,
+      ),
+    ).toBe(true);
+    barrier.cancel();
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("fails closed when the quiet timer fires synchronously during scheduling", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0]);
+    clock.synchronousDelays.add(EDGE_POLICY.reconnectQuietPeriodMs);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: new FakeHidPort(() => []),
+      policy: EDGE_POLICY,
+    });
+
+    await barrier.arm();
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("contains cancellation reentered while a quiet timer is being assigned", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0]);
+    clock.onSchedule = (delayMs) => {
+      if (delayMs === EDGE_POLICY.reconnectQuietPeriodMs) barrier.cancel();
+    };
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: new FakeHidPort(() => []),
+      policy: EDGE_POLICY,
+    });
+
+    await barrier.arm();
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("does not schedule replacement quiet work after timer cleanup reenters cancellation", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0]);
+    const port = new FakeHidPort(() => []);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+    await barrier.arm();
+    clock.onClear = (delayMs) => {
+      if (delayMs === EDGE_POLICY.reconnectQuietPeriodMs) barrier.cancel();
+    };
+
+    port.emit({ type: "disconnect", device: snapshot(selected, false) });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("ignores a retained stale quiet callback after polling sees the candidate again", async () => {
+    const selected = identity();
+    let read = 0;
+    const port = new FakeHidPort(() => {
+      read += 1;
+      return read === 1 ? [] : [snapshot(selected, true)];
+    });
+    const clock = new ProgrammableClock([0, 0, 1, 2]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    const outcome = barrier.wait();
+    for (
+      let attempt = 0;
+      attempt < 10 &&
+      !clock.timers.some(
+        (timer) =>
+          !timer.cleared && timer.delayMs === EDGE_POLICY.pollIntervalMs,
+      );
+      attempt += 1
+    ) {
+      await flushMicrotasks();
+    }
+    expect(port.calls).toBeGreaterThanOrEqual(2);
+    expect(
+      clock.timers.some(
+        (timer) =>
+          !timer.cleared && timer.delayMs === EDGE_POLICY.pollIntervalMs,
+      ),
+    ).toBe(true);
+    clock.fireByDelay(EDGE_POLICY.reconnectQuietPeriodMs, true);
+    expect(await isPending(outcome)).toBe(true);
+    barrier.cancel();
+    await expect(outcome).resolves.toBe("unavailable");
+  });
+
+  it("ignores retained browser callbacks after terminal cleanup", async () => {
+    const selected = identity();
+    let retained: ((change: HidDeviceChange) => void) | undefined;
+    const port: HidPort = {
+      getGrantedDevices: () => Promise.resolve([snapshot(selected, true)]),
+      subscribeToDeviceChanges: (listener) => {
+        retained = listener;
+        return () => undefined;
+      },
+    };
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+    await barrier.arm();
+    retained?.({ type: "unavailable" });
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+
+    expect(() => retained?.({ type: "unavailable" })).not.toThrow();
+  });
+
+  it("ignores a known peer disconnect and fails closed if selected-disconnect time is invalid", async () => {
+    const selected = identity();
+    const peer = identity();
+    const clock = new ProgrammableClock([Number.NaN]);
+    const port = new FakeHidPort(() => [
+      snapshot(selected, true),
+      snapshot(peer, false),
+    ]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected, [peer]),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+    await barrier.arm();
+
+    port.emit({ type: "disconnect", device: snapshot(peer, false) });
+    expect(port.listeners.size).toBe(1);
+    port.emit({ type: "disconnect", device: snapshot(selected, false) });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("fails unavailable when quiet-timer time becomes invalid", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: new FakeHidPort(() => []),
+      policy: EDGE_POLICY,
+    });
+    await barrier.arm();
+    clock.monotonicValues[0] = Number.NaN;
+
+    clock.fireByDelay(EDGE_POLICY.reconnectQuietPeriodMs);
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+  });
+
+  it("lets the owned deadline reject an initial absence", async () => {
+    const selected = identity();
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0, EDGE_POLICY.releaseDeadlineMs]),
+      hidPort: new FakeHidPort(() => []),
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("timed-out");
+  });
+
+  it("treats a connect event for the exact selected handle as ambiguous", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+    await barrier.arm();
+
+    port.emit({ type: "connect", device: snapshot(selected, true) });
+
+    await expect(barrier.wait()).resolves.toBe("ambiguous");
+  });
+
+  it("treats an unknown same-model identity in an initial snapshot as ambiguous", async () => {
+    const selected = identity();
+    const unknownPeer = identity();
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0]),
+      hidPort: new FakeHidPort(() => [
+        snapshot(selected, true),
+        snapshot(unknownPeer, false),
+      ]),
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("ambiguous");
+  });
+
+  it("fails unavailable when deadline-callback time becomes invalid", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0, 1, 2]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: new FakeHidPort(() => [snapshot(selected, true)]),
+      policy: EDGE_POLICY,
+    });
+    const outcome = barrier.wait();
+    await flushMicrotasks();
+    clock.monotonicValues.splice(0, clock.monotonicValues.length, Number.NaN);
+
+    clock.fireByDelay(EDGE_POLICY.releaseDeadlineMs);
+
+    await expect(outcome).resolves.toBe("unavailable");
+  });
+
+  it("ignores a retained poll callback while the prior poll read is in flight", async () => {
+    const selected = identity();
+    const pending = deferred<readonly HidDeviceSnapshot[]>();
+    let read = 0;
+    const port = new FakeHidPort(() => {
+      read += 1;
+      return read < 3 ? [snapshot(selected, true)] : pending.promise;
+    });
+    const clock = new ProgrammableClock([0, 1, 2, 3]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+    const outcome = barrier.wait();
+    for (
+      let attempt = 0;
+      attempt < 10 &&
+      !clock.timers.some(
+        (timer) =>
+          !timer.cleared && timer.delayMs === EDGE_POLICY.pollIntervalMs,
+      );
+      attempt += 1
+    ) {
+      await flushMicrotasks();
+    }
+
+    clock.fireByDelay(EDGE_POLICY.pollIntervalMs);
+    await flushMicrotasks();
+    expect(port.inFlight).toBe(1);
+    clock.fireByDelay(EDGE_POLICY.pollIntervalMs, true);
+    expect(port.maxInFlight).toBe(1);
+
+    barrier.cancel();
+    pending.resolve([snapshot(selected, true)]);
+    await expect(outcome).resolves.toBe("unavailable");
+  });
+
+  it("reschedules an early deadline callback and ignores it after release", async () => {
+    const selected = identity();
+    const clock = new ProgrammableClock([0, 1, 2, 3]);
+    const port = new FakeHidPort(() => [snapshot(selected, false)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock,
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    const outcome = barrier.wait();
+    clock.fireByDelay(EDGE_POLICY.releaseDeadlineMs);
+    await expect(outcome).resolves.toBe("released");
+    clock.fireByDelay(EDGE_POLICY.releaseDeadlineMs - 1, true);
+    await expect(outcome).resolves.toBe("released");
+  });
+
+  it.each([
+    ["deadline", EDGE_POLICY.releaseDeadlineMs],
+    ["poll", EDGE_POLICY.pollIntervalMs],
+  ])(
+    "fails closed when the %s timer fires synchronously",
+    async (_label, delay) => {
+      const selected = identity();
+      const clock = new ProgrammableClock([0, 1, 2]);
+      clock.synchronousDelays.add(delay);
+      const barrier = createHidReleaseBarrier({
+        candidate: uniqueCandidate(selected),
+        clock,
+        hidPort: new FakeHidPort(() => [snapshot(selected, true)]),
+        policy: EDGE_POLICY,
+      });
+
+      await expect(barrier.wait()).resolves.toBe("unavailable");
+    },
+  );
+
+  it.each([
+    ["deadline", EDGE_POLICY.releaseDeadlineMs],
+    ["poll", EDGE_POLICY.pollIntervalMs],
+  ])(
+    "contains cancellation reentered while assigning the %s timer",
+    async (_label, delay) => {
+      const selected = identity();
+      const clock = new ProgrammableClock([0, 1, 2]);
+      clock.onSchedule = (scheduledDelay) => {
+        if (scheduledDelay === delay) barrier.cancel();
+      };
+      const barrier = createHidReleaseBarrier({
+        candidate: uniqueCandidate(selected),
+        clock,
+        hidPort: new FakeHidPort(() => [snapshot(selected, true)]),
+        policy: EDGE_POLICY,
+      });
+
+      await expect(barrier.wait()).resolves.toBe("unavailable");
+    },
+  );
+
+  it.each([
+    {
+      label: "before a poll read",
+      times: [0, Number.NaN],
+      second: [snapshot(identity(), true)],
+      expected: "unavailable",
+    },
+    {
+      label: "at the deadline before a poll read",
+      times: [0, EDGE_POLICY.releaseDeadlineMs],
+      second: [snapshot(identity(), true)],
+      expected: "timed-out",
+    },
+  ])("classifies invalid time $label", async ({ times, expected }) => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([...times]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe(expected);
+  });
+
+  it.each([
+    {
+      label: "immediately after the poll capture",
+      times: [0, 1, Number.NaN],
+      expected: "unavailable",
+    },
+    {
+      label: "at the deadline after the poll capture",
+      times: [0, 1, EDGE_POLICY.releaseDeadlineMs],
+      expected: "timed-out",
+    },
+    {
+      label: "while timestamping inspected evidence",
+      times: [0, 1, 2, Number.NaN],
+      expected: "unavailable",
+    },
+    {
+      label: "at the deadline while timestamping inspected evidence",
+      times: [0, 1, 2, EDGE_POLICY.releaseDeadlineMs],
+      expected: "timed-out",
+    },
+  ])("classifies time $label", async ({ times, expected }) => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([...times]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe(expected);
+  });
+
+  it("fails closed when a poll sees the selected identity under a different product", async () => {
+    const selected = identity();
+    let read = 0;
+    const port = new FakeHidPort(() => {
+      read += 1;
+      return [snapshot(selected, true, read === 1 ? 0x4000 : 0x4001)];
+    });
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: new ProgrammableClock([0, 1, 2]),
+      hidPort: port,
+      policy: EDGE_POLICY,
+    });
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
   });
 
   it.each([

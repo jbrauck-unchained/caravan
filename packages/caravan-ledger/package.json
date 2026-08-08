@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
-    "ci": "npm run lint && npm run typecheck && npm run test && npm run test:private && npm run test:package:built",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run test:private && npm run test:coverage && npm run test:package:built && npm run test:documentation:built && npm run test:ledger-contract:guard",
     "dev": "npm run build -- --watch",
     "lint": "eslint src \"test/**/*.ts\"",
     "test": "vitest run src",
@@ -34,8 +34,14 @@
     "test:browser-synthetic": "vitest run test/browser-lab",
     "test:consumer": "npm run build && npm run test:consumer:built",
     "test:consumer:built": "node test/consumer/run-webpack5-ts46.mjs && node test/consumer/run-modern-esm.mjs",
+    "test:coverage": "vitest run src test/handoff test/model test/privacy test/browser-lab --coverage --coverage.thresholds.branches=95",
+    "test:documentation": "npm run build && npm run test:documentation:built",
+    "test:documentation:built": "node test/documentation-contract.mjs",
     "test:import": "npm run build && node test/import-built.mjs",
     "test:handoff": "vitest run test/handoff",
+    "test:ledger-contract": "node test/sdk-contract/gate.mjs required",
+    "test:ledger-contract:guard": "node test/sdk-contract/gate.mjs guard",
+    "test:ledger-contract:release-guard": "node test/sdk-contract/gate.mjs release",
     "test:model": "vitest run test/model",
     "test:package": "npm run build && npm run test:package:built",
     "test:package:built": "node test/import-built.mjs && node test/artifact-contract.mjs && npm run test:consumer:built",
@@ -64,6 +70,7 @@
   "devDependencies": {
     "@caravan/eslint-config": "*",
     "@caravan/typescript-config": "*",
+    "@playwright/test": "1.60.0",
     "typescript": "^5.3.3"
   }
 }

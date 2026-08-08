@@ -847,4 +847,204 @@ describe("bounded private HID snapshot capture", () => {
     expect(clock.setCalls).toEqual([]);
     expect(clock.clearCalls).toEqual([]);
   });
+
+  it("rejects a primitive returned directly by a malformed HID port", async () => {
+    const clock = new ManualClock();
+    const handle = captureHidSnapshot({
+      clock,
+      hidPort: directHidPort(() => null),
+      snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+    });
+
+    await expect(handle.result).resolves.toBeUndefined();
+    expect(clock.clearCalls).toEqual([0]);
+  });
+
+  it.each(["constructor", "then", "prototype"] as const)(
+    "stops Promise reflection when the watchdog fires during %s inspection",
+    async (boundary) => {
+      const clock = new ManualClock();
+      const descriptorKeys: PropertyKey[] = [];
+      const source = new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor(target, property) {
+            descriptorKeys.push(property);
+            if (property === boundary) clock.fire();
+            return Reflect.getOwnPropertyDescriptor(target, property);
+          },
+          getPrototypeOf(target) {
+            if (boundary === "prototype") clock.fire();
+            return Reflect.getPrototypeOf(target);
+          },
+        },
+      );
+
+      const handle = captureHidSnapshot({
+        clock,
+        hidPort: directHidPort(() => source),
+        snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+      });
+
+      await expect(handle.result).resolves.toBeUndefined();
+      expect(clock.clearCalls).toEqual([0]);
+      if (boundary === "constructor") {
+        expect(descriptorKeys).toEqual(["constructor"]);
+      } else if (boundary === "then") {
+        expect(descriptorKeys).toEqual(["constructor", "then"]);
+      } else {
+        expect(descriptorKeys).toEqual(["constructor", "then"]);
+      }
+    },
+  );
+
+  it("observes a base Promise with an exact own intrinsic constructor but rejects it as modified evidence", async () => {
+    const clock = new ManualClock();
+    const source = Promise.resolve<readonly HidDeviceSnapshot[]>([snapshot()]);
+    Object.defineProperty(source, "constructor", {
+      configurable: true,
+      value: Promise,
+    });
+
+    const handle = captureHidSnapshot({
+      clock,
+      hidPort: directHidPort(() => source),
+      snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+    });
+
+    await expect(handle.result).resolves.toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(source, "constructor")?.value).toBe(
+      Promise,
+    );
+  });
+
+  it("rejects a Promise whose hostile constructor cannot be safely shadowed", async () => {
+    const clock = new ManualClock();
+    const pending = deferred<readonly HidDeviceSnapshot[]>();
+    Object.defineProperty(pending.promise, "constructor", {
+      configurable: false,
+      value: function HostileConstructor() {},
+    });
+
+    const handle = captureHidSnapshot({
+      clock,
+      hidPort: directHidPort(() => pending.promise),
+      snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+    });
+
+    await expect(handle.result).resolves.toBeUndefined();
+    expect(clock.clearCalls).toEqual([0]);
+  });
+
+  it("rejects evidence when a temporarily shadowed constructor cannot be restored", async () => {
+    const clock = new ManualClock();
+    const source = Promise.resolve<readonly HidDeviceSnapshot[]>([snapshot()]);
+    const hostileConstructor = function HostileConstructor() {};
+    Object.defineProperty(source, "constructor", {
+      configurable: true,
+      value: hostileConstructor,
+    });
+    const intrinsicDefineProperty = Object.defineProperty;
+    let constructorWrites = 0;
+    const defineProperty = vi
+      .spyOn(Object, "defineProperty")
+      .mockImplementation(((
+        target: object,
+        key: PropertyKey,
+        descriptor: PropertyDescriptor,
+      ) => {
+        if (target === source && key === "constructor") {
+          constructorWrites += 1;
+          if (constructorWrites === 2) throw new Error("restore-canary");
+        }
+        return intrinsicDefineProperty(target, key, descriptor);
+      }) as typeof Object.defineProperty);
+
+    try {
+      const handle = captureHidSnapshot({
+        clock,
+        hidPort: directHidPort(() => source),
+        snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+      });
+
+      await expect(handle.result).resolves.toBeUndefined();
+      expect(constructorWrites).toBe(2);
+    } finally {
+      defineProperty.mockRestore();
+    }
+  });
+
+  it("observes a Promise subclass fulfillment but never accepts it as snapshot evidence", async () => {
+    const clock = new ManualClock();
+    class ForeignShapePromise<T> extends Promise<T> {}
+    const source = new ForeignShapePromise<readonly HidDeviceSnapshot[]>(
+      (resolve) => resolve([snapshot()]),
+    );
+
+    const handle = captureHidSnapshot({
+      clock,
+      hidPort: directHidPort(() => source),
+      snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+    });
+
+    await expect(handle.result).resolves.toBeUndefined();
+    expect(
+      Object.getOwnPropertyDescriptor(source, "constructor"),
+    ).toBeUndefined();
+  });
+
+  it("stops after array-index reflection when the watchdog settles reentrantly", async () => {
+    const clock = new ManualClock();
+    const source = new Proxy([snapshot()], {
+      getOwnPropertyDescriptor(target, property) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        if (property === "0") clock.fire();
+        return descriptor;
+      },
+    });
+    const handle = captureHidSnapshot({
+      clock,
+      hidPort: directHidPort(() => Promise.resolve(source)),
+      snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+    });
+
+    await expect(handle.result).resolves.toBeUndefined();
+    expect(clock.clearCalls).toEqual([0]);
+  });
+
+  it.each([1, 2])(
+    "stops after freezing package-owned records when a hostile intrinsic settles a %i-item copy",
+    async (length) => {
+      const clock = new ManualClock();
+      const source = Array.from({ length }, () => snapshot());
+      const intrinsicFreeze = Object.freeze;
+      let settledFromRecord = false;
+      const freeze = vi.spyOn(Object, "freeze").mockImplementation(((
+        value: object,
+      ) => {
+        const frozen = intrinsicFreeze(value);
+        if (
+          !settledFromRecord &&
+          Object.prototype.hasOwnProperty.call(value, "vendorId")
+        ) {
+          settledFromRecord = true;
+          clock.fire();
+        }
+        return frozen;
+      }) as typeof Object.freeze);
+
+      try {
+        const handle = captureHidSnapshot({
+          clock,
+          hidPort: directHidPort(() => Promise.resolve(source)),
+          snapshotTimeoutMs: SNAPSHOT_TIMEOUT_MS,
+        });
+
+        await expect(handle.result).resolves.toBeUndefined();
+        expect(settledFromRecord).toBe(true);
+      } finally {
+        freeze.mockRestore();
+      }
+    },
+  );
 });

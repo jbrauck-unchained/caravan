@@ -1,6 +1,6 @@
 import { systemClock } from "./clock";
 import { discoverOneDevice, DiscoveryBoundaryError } from "./discovery";
-import type { DmkDiscoveredDevice } from "./dmkPort";
+import type { DmkDiscoveredDevice, DmkPort } from "./dmkPort";
 import { ScriptedDmk } from "./testing/scriptedDmk";
 
 const firstDevice: DmkDiscoveredDevice = Object.freeze({
@@ -128,5 +128,51 @@ describe("single-device discovery", () => {
       discoveryCount: 0,
       cancelCount: 0,
     });
+  });
+
+  it("preserves the first cleanup failure when both cancellation and unsubscription are hostile", async () => {
+    const cancelError = new Error("symbolic discovery cancel failure");
+    const unsubscribeError = new Error("symbolic discovery unsubscribe failure");
+    const port = {
+      startDiscovery: () => ({
+        cancel: () => {
+          throw cancelError;
+        },
+        stream: {
+          subscribe: (observer: { next(device: DmkDiscoveredDevice): void }) => {
+            observer.next(firstDevice);
+            return {
+              closed: false,
+              unsubscribe: () => {
+                throw unsubscribeError;
+              },
+            };
+          },
+        },
+      }),
+    } as unknown as DmkPort;
+
+    await expect(discoverOneDevice(port).result).rejects.toBe(cancelError);
+  });
+
+  it("contains a subscription throw that follows synchronous selection cleanup", async () => {
+    const subscriptionError = new Error("symbolic post-selection subscribe failure");
+    const cancel = vi.fn();
+    const port = {
+      startDiscovery: () => ({
+        cancel,
+        stream: {
+          subscribe: (observer: { next(device: DmkDiscoveredDevice): void }) => {
+            observer.next(firstDevice);
+            throw subscriptionError;
+          },
+        },
+      }),
+    } as unknown as DmkPort;
+
+    await expect(discoverOneDevice(port).result).rejects.toBe(
+      subscriptionError,
+    );
+    expect(cancel).toHaveBeenCalledOnce();
   });
 });
