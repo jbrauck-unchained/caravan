@@ -28,6 +28,7 @@ import {
   type SupportedModelPolicy,
 } from "./supportedModels";
 import { ScriptedDmk } from "./testing/scriptedDmk";
+import { PROVISIONAL_OPERATION_WATCHDOG_POLICY } from "./timeoutPolicy";
 
 const device: DmkDiscoveredDevice = Object.freeze({
   internalDeviceId: "operation-race-device",
@@ -412,14 +413,14 @@ describe("read-only operation races", () => {
       );
       await Promise.resolve();
 
-      expect(settled).toBe(false);
-      expect(() => acquireRuntimeLease()).toThrowError("already in use");
-
-      await vi.advanceTimersByTimeAsync(20);
       await expect(preparation).rejects.toMatchObject({
         code: "cancelled",
         phase: "connecting",
       });
+      expect(settled).toBe(true);
+      expect(() => acquireRuntimeLease()).toThrowError("already in use");
+
+      await vi.advanceTimersByTimeAsync(20);
       expect(fake.resources()).toMatchObject({
         connectCount: 1,
         disconnectCount: 1,
@@ -512,6 +513,459 @@ describe("read-only operation races", () => {
     expect(phases).toEqual(["cancelled"]);
     expect(acquireLease).not.toHaveBeenCalled();
     expect(createPort).not.toHaveBeenCalled();
+  });
+});
+
+describe("operation stage watchdogs", () => {
+  beforeEach(() => {
+    resetRuntimeLeaseForTesting();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    resetRuntimeLeaseForTesting();
+  });
+
+  it("contains a synchronously fired watchdog and clears timer handle zero", async () => {
+    const zeroTimer = 0 as unknown as ClockTimer;
+    const clearTimeout = vi.fn<(timer: ClockTimer) => void>();
+    const synchronousClock: Clock = {
+      now: () => 1_000,
+      monotonicNow: () => 1_000,
+      setTimeout: (callback, delayMs) => {
+        if (delayMs === PROVISIONAL_OPERATION_WATCHDOG_POLICY.discovery) {
+          callback();
+        }
+        return zeroTimer;
+      },
+      clearTimeout,
+    };
+    const fake = new ScriptedDmk(synchronousClock);
+    const harness = createOperationHarness(fake, { clock: synchronousClock });
+
+    await expect(harness.operation.begin()).rejects.toMatchObject({
+      code: "operation-timeout",
+      phase: "selecting-device",
+    });
+
+    expect(harness.operation.phase).toBe("failed");
+    expect(harness.events.map(({ phase }) => phase)).toEqual([
+      "selecting-device",
+      "failed",
+    ]);
+    expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
+    expect(fake.resources()).toMatchObject({
+      discoveryCount: 0,
+      connectCount: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("strips cleared stage callbacks of authority after every transition", async () => {
+    let nextTimer = 0;
+    const stageCallbacks: Array<() => void> = [];
+    const retainedCallbackClock: Clock = {
+      now: () => 1_000,
+      monotonicNow: () => 1_000,
+      setTimeout: (callback, delayMs) => {
+        if (
+          Object.values(PROVISIONAL_OPERATION_WATCHDOG_POLICY).some(
+            (timeoutMs) => timeoutMs === delayMs,
+          )
+        ) {
+          stageCallbacks.push(callback);
+        }
+        nextTimer += 1;
+        return nextTimer as unknown as ClockTimer;
+      },
+      clearTimeout: () => undefined,
+    };
+    const fake = queuePreparation(
+      new ScriptedDmk(retainedCallbackClock),
+      true,
+    );
+    const harness = createOperationHarness(fake, {
+      clock: retainedCallbackClock,
+    });
+    const plan = await harness.operation.begin();
+    const eventsBeforeStaleCallbacks = [...harness.events];
+
+    expect(stageCallbacks).toHaveLength(4);
+    for (const callback of stageCallbacks) callback();
+    await Promise.resolve();
+
+    expect(harness.operation.phase).toBe("ready-to-install");
+    expect(harness.events).toEqual(eventsBeforeStaleCallbacks);
+    expect(fake.resources().disconnectCount).toBe(0);
+
+    await harness.operation.dispose();
+    await expect(harness.operation.install(plan)).rejects.toMatchObject({
+      code: "internal",
+      phase: "disposed",
+    });
+  });
+
+  it("bounds a never-settling discovery as a pre-mutation timeout", async () => {
+    const fake = new ScriptedDmk(systemClock).queueDiscovery([
+      { type: "never" },
+    ]);
+    const harness = createOperationHarness(fake);
+    const preparation = harness.operation.begin();
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.discovery,
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "operation-timeout",
+      phase: "selecting-device",
+      recoverable: true,
+    });
+    expect(harness.operation.phase).toBe("failed");
+    expect(fake.resources()).toMatchObject({
+      cancelCount: 1,
+      connectCount: 0,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+  });
+
+  it("settles a never-settling connect but quarantines its runtime lease", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({ type: "never" });
+    const harness = createOperationHarness(fake);
+    const preparation = harness.operation.begin();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (harness.operation.phase === "connecting") break;
+      await Promise.resolve();
+    }
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "operation-timeout",
+      phase: "connecting",
+      recoverable: true,
+    });
+    expect(harness.operation.phase).toBe("failed");
+    expect(fake.resources()).toMatchObject({
+      connectCount: 1,
+      disconnectCount: 0,
+      actionCount: 0,
+      scheduledTimers: 0,
+    });
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+  });
+
+  it("does not start a deferred connect after queued terminal cancellation", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({ type: "never" });
+    const operationRef: { current?: ReadOnlyPrepareOperation } = {};
+    const harness = createOperationHarness(fake, {
+      onEvent: (event) => {
+        if (event.phase === "connecting") {
+          queueMicrotask(() => void operationRef.current?.cancel());
+        }
+      },
+    });
+    const operation = harness.operation;
+    operationRef.current = operation;
+
+    await expect(operation.begin()).rejects.toMatchObject({
+      code: "cancelled",
+      phase: "connecting",
+    });
+    await Promise.resolve();
+
+    expect(operation.phase).toBe("cancelled");
+    expect(fake.resources()).toMatchObject({
+      connectCount: 0,
+      disconnectCount: 0,
+      actionCount: 0,
+      scheduledTimers: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("contains a session that resolves after connect timeout and releases only after exact cleanup", async () => {
+    const hidPort = new SequencedHidPort([Object.freeze([])]);
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({
+        type: "resolve",
+        value: session,
+        afterMs: PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect + 20,
+      })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const harness = createOperationHarness(fake, {
+      createHidPort: () => hidPort,
+    });
+    const preparation = harness.operation.begin();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (harness.operation.phase === "connecting") break;
+      await Promise.resolve();
+    }
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+    );
+    await expect(preparation).rejects.toMatchObject({
+      code: "operation-timeout",
+      phase: "connecting",
+    });
+    const terminalEvents = [...harness.events];
+    expect(hidPort.readCount).toBe(1);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+    expect(fake.resources().disconnectCount).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(harness.events).toEqual(terminalEvents);
+    expect(hidPort.readCount).toBe(1);
+    expect(hidPort.activeListeners).toBe(0);
+    expect(harness.operation.phase).toBe("failed");
+    expect(actionKinds(fake)).toEqual([]);
+    expect(fake.resources()).toMatchObject({
+      connectCount: 1,
+      disconnectCount: 1,
+      actionCount: 0,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+    expect(fake.calls.filter((call) => call.type === "disconnect")).toEqual([
+      expect.objectContaining({ session }),
+    ]);
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("releases a quarantined lease when connect rejects after its public timeout", async () => {
+    const lateFailure = new Error("private late connection failure");
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({
+        type: "reject",
+        error: lateFailure,
+        afterMs: PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect + 20,
+      });
+    const harness = createOperationHarness(fake);
+    const preparation = harness.operation.begin();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (harness.operation.phase === "connecting") break;
+      await Promise.resolve();
+    }
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+    );
+    await expect(preparation).rejects.toMatchObject({
+      code: "operation-timeout",
+      phase: "connecting",
+    });
+    const terminalEvents = [...harness.events];
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(harness.events).toEqual(terminalEvents);
+    expect(fake.resources()).toMatchObject({
+      connectCount: 1,
+      disconnectCount: 0,
+      actionCount: 0,
+      scheduledTimers: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it.each([
+    {
+      name: "genuine check",
+      phase: "checking-genuine" as const,
+      timeoutMs: PROVISIONAL_OPERATION_WATCHDOG_POLICY.genuine,
+      fake: () =>
+        new ScriptedDmk(systemClock)
+          .queueDiscovery([{ type: "next", value: device }])
+          .queueConnect({ type: "resolve", value: session })
+          .queueSessionLifecycle([{ type: "never" }])
+          .queueAction("genuine", [{ type: "never" }]),
+      expectedActions: ["genuine"],
+    },
+    {
+      name: "Bitcoin inspection",
+      phase: "checking-bitcoin-app" as const,
+      timeoutMs: PROVISIONAL_OPERATION_WATCHDOG_POLICY.inspect,
+      fake: () =>
+        new ScriptedDmk(systemClock)
+          .queueDiscovery([{ type: "next", value: device }])
+          .queueConnect({ type: "resolve", value: session })
+          .queueSessionLifecycle([{ type: "never" }])
+          .queueAction("genuine", [
+            {
+              type: "next",
+              value: {
+                status: "completed",
+                output: { isGenuine: true },
+              },
+            },
+          ])
+          .queueAction("list-bitcoin", [{ type: "never" }]),
+      expectedActions: ["genuine", "list-bitcoin"],
+    },
+  ])(
+    "bounds a hanging $name and resets its stage deadline",
+    async (testCase) => {
+      const fake = testCase.fake();
+      const harness = createOperationHarness(fake);
+      const preparation = harness.operation.begin();
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (harness.operation.phase === testCase.phase) break;
+        await Promise.resolve();
+      }
+      expect(harness.operation.phase).toBe(testCase.phase);
+
+      await vi.advanceTimersByTimeAsync(testCase.timeoutMs);
+
+      await expect(preparation).rejects.toMatchObject({
+        code: "operation-timeout",
+        phase: testCase.phase,
+        recoverable: true,
+      });
+      expect(harness.operation.phase).toBe("failed");
+      expect(actionKinds(fake)).toEqual(testCase.expectedActions);
+      expect(fake.resources()).toMatchObject({
+        disconnectCount: 1,
+        activeSubscriptions: 0,
+        scheduledTimers: 0,
+      });
+    },
+  );
+
+  it("classifies an installing timeout before native dispatch as pre-mutation", async () => {
+    const fake = queuePreparation(new ScriptedDmk(systemClock), false);
+    const harness = createOperationHarness(fake, {
+      onEvent: (event) => {
+        if (event.phase === "installing") {
+          vi.advanceTimersByTime(
+            PROVISIONAL_OPERATION_WATCHDOG_POLICY["install-dispatched"],
+          );
+        }
+      },
+    });
+    const plan = await harness.operation.begin();
+
+    await expect(harness.operation.install(plan)).rejects.toMatchObject({
+      code: "operation-timeout",
+      phase: "installing",
+      recoverable: true,
+    });
+    expect(harness.operation.phase).toBe("failed");
+    expect(actionKinds(fake)).toEqual(["genuine", "list-bitcoin"]);
+    expect(fake.resources().disconnectCount).toBe(1);
+  });
+
+  it("classifies a timeout after install dispatch as unknown state", async () => {
+    const fake = queuePreparation(
+      new ScriptedDmk(systemClock),
+      false,
+    ).queueAction("install-bitcoin", [
+      { type: "attempt-install-mutation" },
+      { type: "never" },
+    ]);
+    const harness = createOperationHarness(fake);
+    const plan = await harness.operation.begin();
+    const installation = harness.operation.install(plan);
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY["install-dispatched"],
+    );
+
+    await expect(installation).rejects.toMatchObject({
+      code: "state-unknown",
+      phase: "installing",
+      recoverable: true,
+    });
+    expect(harness.operation.phase).toBe("needs-recovery");
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+  });
+
+  it("resets the install deadline at verification and keeps timeout state unknown", async () => {
+    const fake = queuePreparation(new ScriptedDmk(systemClock), false)
+      .queueAction("install-bitcoin", [
+        { type: "attempt-install-mutation" },
+        {
+          type: "next",
+          value: {
+            status: "completed",
+            output: { actionCompleted: true },
+          },
+        },
+      ])
+      .queueAction("list-bitcoin", [{ type: "never" }]);
+    const harness = createOperationHarness(fake);
+    const plan = await harness.operation.begin();
+    const installation = harness.operation.install(plan);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (harness.operation.phase === "verifying") break;
+      await Promise.resolve();
+    }
+    expect(harness.operation.phase).toBe("verifying");
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.verify,
+    );
+
+    await expect(installation).rejects.toMatchObject({
+      code: "state-unknown",
+      phase: "verifying",
+      recoverable: true,
+    });
+    expect(harness.operation.phase).toBe("needs-recovery");
+    expect(actionKinds(fake)).toEqual([
+      "genuine",
+      "list-bitcoin",
+      "install-bitcoin",
+      "list-bitcoin",
+    ]);
+  });
+
+  it("turns an open timeout into appOpen false and performs normal release", async () => {
+    const fake = queuePreparation(
+      new ScriptedDmk(systemClock),
+      true,
+    ).queueAction("open-bitcoin", [{ type: "never" }]);
+    const harness = createOperationHarness(fake);
+    const plan = await harness.operation.begin();
+    const installation = harness.operation.install(plan);
+    expect(harness.operation.phase).toBe("opening-bitcoin");
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.open,
+    );
+
+    await expect(installation).resolves.toEqual({
+      status: "already-installed",
+      appOpen: false,
+      handoff: "reconnect-required",
+    });
+    expect(harness.operation.phase).toBe("ready-for-webusb");
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
   });
 });
 
@@ -841,7 +1295,10 @@ describe("mutation operation orchestration", () => {
           RuntimeLeaseBusyError,
         );
         expect(finalizeSpy, setupCase.name).toHaveBeenCalledTimes(index + 1);
-        expect(compatibilityDisconnectSpy, setupCase.name).not.toHaveBeenCalled();
+        expect(
+          compatibilityDisconnectSpy,
+          setupCase.name,
+        ).not.toHaveBeenCalled();
 
         await vi.advanceTimersByTimeAsync(
           PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
@@ -900,10 +1357,10 @@ describe("mutation operation orchestration", () => {
     await vi.advanceTimersByTimeAsync(20);
 
     expect(fake.resources().disconnectCount).toBe(1);
-    expect(cancellationSettled).toBe(false);
+    expect(cancellationSettled).toBe(true);
     expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
     expect(finalizeSpy).toHaveBeenCalledOnce();
-    expect(compatibilityDisconnectSpy).not.toHaveBeenCalled();
+    expect(compatibilityDisconnectSpy).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(
       PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
@@ -1904,10 +2361,15 @@ describe("mutation operation orchestration", () => {
     await expect(harness.operation.install(plan)).resolves.toMatchObject({
       status: "already-installed",
     });
-    expect(clearTimeout).toHaveBeenCalledTimes(2);
+    expect(clearTimeout).toHaveBeenCalledTimes(7);
     expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
     expect(scheduledDurations).toEqual([
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.discovery,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.genuine,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.inspect,
       137,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.open,
       PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
     ]);
   });
@@ -1921,7 +2383,7 @@ describe("mutation operation orchestration", () => {
       monotonicNow: () => 1_000,
       setTimeout: (callback, delayMs) => {
         scheduledDurations.push(delayMs);
-        callback();
+        if (delayMs === 137) callback();
         return zeroTimer;
       },
       clearTimeout,
@@ -1944,9 +2406,13 @@ describe("mutation operation orchestration", () => {
     );
     expect(harness.operation.phase).toBe("failed");
     expect(actionKinds(fake)).toEqual(["genuine", "list-bitcoin"]);
-    expect(clearTimeout).toHaveBeenCalledTimes(2);
+    expect(clearTimeout).toHaveBeenCalledTimes(6);
     expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
     expect(scheduledDurations).toEqual([
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.discovery,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.genuine,
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY.inspect,
       137,
       PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
     ]);
@@ -1968,7 +2434,7 @@ describe("mutation operation orchestration", () => {
         monotonicNow: () => 1_000,
         setTimeout: (_callback, delayMs) => {
           scheduledDurations.push(delayMs);
-          void operationRef.current?.[method]();
+          if (delayMs === 137) void operationRef.current?.[method]();
           return zeroTimer;
         },
         clearTimeout,
@@ -1990,9 +2456,13 @@ describe("mutation operation orchestration", () => {
       );
       expect(operation.phase).toBe(terminal);
       expect(actionKinds(fake)).toEqual(["genuine", "list-bitcoin"]);
-      expect(clearTimeout).toHaveBeenCalledTimes(2);
+      expect(clearTimeout).toHaveBeenCalledTimes(6);
       expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
       expect(scheduledDurations).toEqual([
+        PROVISIONAL_OPERATION_WATCHDOG_POLICY.discovery,
+        PROVISIONAL_OPERATION_WATCHDOG_POLICY.connect,
+        PROVISIONAL_OPERATION_WATCHDOG_POLICY.genuine,
+        PROVISIONAL_OPERATION_WATCHDOG_POLICY.inspect,
         137,
         PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
       ]);

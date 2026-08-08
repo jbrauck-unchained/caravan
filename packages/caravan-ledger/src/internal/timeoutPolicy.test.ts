@@ -5,6 +5,7 @@ import {
   classifyInstallFailure,
   INSTALL_FAILURE_BOUNDARY_TABLE,
   INSTALL_FAILURE_STAGES,
+  PROVISIONAL_OPERATION_WATCHDOG_POLICY,
   type InstallFailureDecision,
   type InstallFailureStage,
   readInstallFailureDiagnostic,
@@ -35,6 +36,30 @@ function expectRejection(
 }
 
 describe("install timeout and failure policy", () => {
+  it("centralizes finite provisional watchdogs for every non-release stage", () => {
+    expect(Object.keys(PROVISIONAL_OPERATION_WATCHDOG_POLICY)).toEqual(
+      INSTALL_FAILURE_STAGES.filter((stage) => stage !== "release"),
+    );
+    expect(Object.isFrozen(PROVISIONAL_OPERATION_WATCHDOG_POLICY)).toBe(true);
+    for (const timeoutMs of Object.values(
+      PROVISIONAL_OPERATION_WATCHDOG_POLICY,
+    )) {
+      expect(Number.isSafeInteger(timeoutMs)).toBe(true);
+      expect(timeoutMs).toBeGreaterThan(0);
+    }
+    for (const stage of [
+      "genuine",
+      "inspect",
+      "install-dispatched",
+      "verify",
+      "open",
+    ] as const) {
+      expect(PROVISIONAL_OPERATION_WATCHDOG_POLICY[stage]).toBeGreaterThan(
+        60_000,
+      );
+    }
+  });
+
   it("defines every stage x mutation-marker cell explicitly and immutably", () => {
     expect(Object.keys(INSTALL_FAILURE_BOUNDARY_TABLE)).toEqual(
       INSTALL_FAILURE_STAGES,
@@ -49,21 +74,21 @@ describe("install timeout and failure policy", () => {
     }
   });
 
-  it.each<
-    [tag: string, code: BitcoinInstallerErrorCode, recoverable: boolean]
-  >([
-    ["DeviceLockedError", "device-locked", true],
-    ["DeviceNotOnboardedError", "device-not-onboarded", false],
-    ["RefusedByUserDAError", "user-refused", true],
-    ["UnsupportedFirmwareDAError", "unsupported-firmware", false],
-    ["NetworkDAError", "network-unavailable", true],
-    ["FetchError", "network-unavailable", true],
-    ["WebSocketConnectionError", "ledger-service-unavailable", true],
-    ["SecureChannelError", "secure-channel-failed", true],
-    ["DeviceDisconnectedWhileSendingError", "device-disconnected", true],
-    ["SendApduTimeoutError", "operation-timeout", true],
-    ["UnknownDAError", "internal", false],
-  ])(
+  it.each<[tag: string, code: BitcoinInstallerErrorCode, recoverable: boolean]>(
+    [
+      ["DeviceLockedError", "device-locked", true],
+      ["DeviceNotOnboardedError", "device-not-onboarded", false],
+      ["RefusedByUserDAError", "user-refused", true],
+      ["UnsupportedFirmwareDAError", "unsupported-firmware", false],
+      ["NetworkDAError", "network-unavailable", true],
+      ["FetchError", "network-unavailable", true],
+      ["WebSocketConnectionError", "ledger-service-unavailable", true],
+      ["SecureChannelError", "secure-channel-failed", true],
+      ["DeviceDisconnectedWhileSendingError", "device-disconnected", true],
+      ["SendApduTimeoutError", "operation-timeout", true],
+      ["UnknownDAError", "internal", false],
+    ],
+  )(
     "maps reviewed pre-native vendor tag %s to %s without a raw cause",
     (tag, code, recoverable) => {
       const decision = vendorFailure("inspect", false, tag);
@@ -233,11 +258,7 @@ describe("install timeout and failure policy", () => {
 
   it("does not invent fixed-action unsupported-app evidence from a planted tag", () => {
     expectRejection(
-      vendorFailure(
-        "inspect",
-        false,
-        "UnsupportedApplicationDAError",
-      ),
+      vendorFailure("inspect", false, "UnsupportedApplicationDAError"),
       "failed",
       "internal",
     );

@@ -43,6 +43,11 @@ import {
 } from "./session";
 import type { SupportedModelPolicy } from "./supportedModels";
 import {
+  classifyInstallFailure,
+  PROVISIONAL_OPERATION_WATCHDOG_POLICY,
+  type OperationWatchdogStage,
+} from "./timeoutPolicy";
+import {
   createHidReleaseBarrier,
   type HidReleaseBarrier,
 } from "./waitForHidRelease";
@@ -112,6 +117,16 @@ const OPERATION_TRANSITIONS = {
 } as const satisfies Readonly<
   Record<OperationPhase, readonly OperationPhase[]>
 >;
+
+const WATCHDOG_STAGE_BY_PHASE = Object.freeze({
+  "selecting-device": "discovery",
+  connecting: "connect",
+  "checking-genuine": "genuine",
+  "checking-bitcoin-app": "inspect",
+  installing: "install-dispatched",
+  verifying: "verify",
+  "opening-bitcoin": "open",
+}) satisfies Readonly<Partial<Record<OperationPhase, OperationWatchdogStage>>>;
 
 interface CancelHandle {
   cancel(): void;
@@ -318,6 +333,12 @@ export class ReadOnlyPrepareOperation {
   #planExpiryTimerClearRequested = false;
 
   #planExpiryTimerCleared = false;
+
+  #stageWatchdogGeneration = 0;
+
+  #stageWatchdogTimer: ClockTimer | undefined;
+
+  #stageWatchdogStage: OperationWatchdogStage | undefined;
 
   #terminalIntent: OperationTerminalPhase | undefined;
 
@@ -938,12 +959,30 @@ export class ReadOnlyPrepareOperation {
       // connection call itself can synchronously reenter through browser/SDK
       // hooks; finalization must already know which promise owns the lease.
       this.#leaseTransferredToSessionSetup = true;
-      const sessionSetup = Promise.resolve().then(() =>
-        openOwnedDmkSession(port, device, {
+      const sessionSetup = Promise.resolve().then(() => {
+        if (!this.#isLive(epoch)) {
+          // A consumer can queue cancellation from the connecting event before
+          // this deferred setup microtask runs. In that case no native connect
+          // has started, so release the transferred lease instead of creating
+          // a post-terminal session that would need quarantine and teardown.
+          this.#releaseLeaseSafely(lease);
+          throw internalError("connecting");
+        }
+        return openOwnedDmkSession(port, device, {
           acquireLease: () => lease,
           clock: this.dependencies.clock,
           modelPolicy: this.dependencies.modelPolicy,
           takeConnectedSession: (connectedSession) => {
+            if (!this.#isLive(epoch)) {
+              // The public operation may already have timed out or been
+              // cancelled while the SDK's non-abortable connect was pending.
+              // Transfer exact cleanup ownership, disconnect this late
+              // session immediately, and retain the runtime lease until that
+              // finalizer finishes. This callback runs synchronously before
+              // openOwnedDmkSession performs any later model/lifecycle setup.
+              void connectedSession.disconnect();
+              return true;
+            }
             // Take cleanup ownership before model/lifecycle setup can fail or
             // reenter. Candidate setup is latched in this same synchronous
             // callback, so every post-connect terminal uses the real barrier.
@@ -951,10 +990,11 @@ export class ReadOnlyPrepareOperation {
             void this.#ensureHidBarrier(connectedSession);
             return true;
           },
-        }),
-      );
+        });
+      });
       this.#sessionSetup = sessionSetup;
       const session = await sessionSetup;
+      if (!this.#isLive(epoch)) return;
       this.#session = session;
       // Latch setup before invoking the post-connect browser snapshot. A
       // reentrant terminal request therefore waits for this exact candidate
@@ -1037,10 +1077,7 @@ export class ReadOnlyPrepareOperation {
         }, this.dependencies.planTtlMs);
       } catch {
         if (this.#isLive(epoch)) {
-          await this.#finalize(
-            "failed",
-            internalError("ready-to-install"),
-          );
+          await this.#finalize("failed", internalError("ready-to-install"));
         }
         return;
       }
@@ -1175,6 +1212,123 @@ export class ReadOnlyPrepareOperation {
     if (this.#activeHandle === handle) this.#activeHandle = undefined;
   }
 
+  #resetStageWatchdog(phase: OperationPhase): void {
+    this.#clearStageWatchdog();
+    const stage = WATCHDOG_STAGE_BY_PHASE[phase];
+    if (!stage) return;
+
+    const generation = this.#stageWatchdogGeneration;
+    const epoch = this.#epoch;
+    this.#stageWatchdogStage = stage;
+    let callbackFired = false;
+    const onTimeout = (): void => {
+      callbackFired = true;
+      if (
+        this.#stageWatchdogGeneration !== generation ||
+        this.#stageWatchdogStage !== stage
+      ) {
+        return;
+      }
+      this.#stageWatchdogTimer = undefined;
+      this.#stageWatchdogStage = undefined;
+      this.#stageWatchdogGeneration += 1;
+      this.#handleStageWatchdogTimeout(stage, epoch);
+    };
+
+    let timer: ClockTimer;
+    try {
+      timer = this.dependencies.clock.setTimeout(
+        onTimeout,
+        PROVISIONAL_OPERATION_WATCHDOG_POLICY[stage],
+      );
+    } catch {
+      onTimeout();
+      return;
+    }
+
+    if (
+      callbackFired ||
+      this.#stageWatchdogGeneration !== generation ||
+      this.#stageWatchdogStage !== stage
+    ) {
+      try {
+        this.dependencies.clock.clearTimeout(timer);
+      } catch {
+        // A synchronously fired/hostile timer cannot retain stage authority.
+      }
+      return;
+    }
+    this.#stageWatchdogTimer = timer;
+  }
+
+  #clearStageWatchdog(): void {
+    this.#stageWatchdogGeneration += 1;
+    this.#stageWatchdogStage = undefined;
+    const timer = this.#stageWatchdogTimer;
+    this.#stageWatchdogTimer = undefined;
+    if (timer === undefined) return;
+    try {
+      this.dependencies.clock.clearTimeout(timer);
+    } catch {
+      // Timer cleanup cannot preserve authority after a stage transition.
+    }
+  }
+
+  #handleStageWatchdogTimeout(
+    stage: OperationWatchdogStage,
+    epoch: number,
+  ): void {
+    if (!this.#isLive(epoch)) return;
+
+    if (stage === "open") {
+      // Opening is non-authoritative. Cancelling its package handle settles
+      // appOpen=false and lets the proven installation continue to release.
+      this.#requestOpenCancellation();
+      return;
+    }
+
+    let terminal: OperationTerminalPhase;
+    let error: BitcoinInstallerError;
+    if (stage === "install-dispatched") {
+      if (this.#installDispatchEvidence === "not-dispatched") {
+        terminal = "failed";
+        error = new BitcoinInstallerError(
+          "operation-timeout",
+          "installing",
+          true,
+        );
+      } else {
+        terminal = "needs-recovery";
+        error = unknownMutationState("installing");
+      }
+    } else if (stage === "verify") {
+      terminal = "needs-recovery";
+      error = unknownMutationState("verifying");
+    } else {
+      const decision = classifyInstallFailure({
+        stage,
+        mutationAttempted: false,
+        trigger: { kind: "timeout" },
+      });
+      if (decision.kind !== "reject") {
+        // Every watched pre-mutation stage is a rejecting policy cell.
+        terminal = "failed";
+        error = internalError(this.#phase);
+      } else {
+        terminal = decision.terminalPhase;
+        error = decision.error;
+      }
+    }
+
+    const activeHandle = this.#activeHandle;
+    void this.#finalize(terminal, error);
+    try {
+      activeHandle?.cancel();
+    } catch {
+      // The terminal classification remains primary over vendor cancellation.
+    }
+  }
+
   #runSynchronousActionSetup<T extends CancelHandle>(start: () => T): T {
     let resolveSetup!: () => void;
     this.#synchronousActionSetupCompletion = new Promise<void>((resolve) => {
@@ -1220,6 +1374,7 @@ export class ReadOnlyPrepareOperation {
       throw new Error("Invalid installer state transition.");
     }
     this.#phase = nextPhase;
+    this.#resetStageWatchdog(nextPhase);
     onEntered?.();
     try {
       this.dependencies.onEvent(Object.freeze({ ...event }));
@@ -1303,6 +1458,7 @@ export class ReadOnlyPrepareOperation {
     this.#cleanupPromise = cleanupPromise;
 
     this.#epoch += 1;
+    this.#clearStageWatchdog();
     if (!this.#leaseTransferredToSessionSetup) {
       // Before connection ownership transfers, there is no session finalizer
       // to block discovery/capture work or reserve the generation. Keep this
@@ -1343,19 +1499,14 @@ export class ReadOnlyPrepareOperation {
       await this.#synchronousActionSetupCompletion;
     }
 
-    let session = this.#session;
+    const session = this.#session;
     if (!session && this.#sessionSetup) {
-      try {
-        session = await this.#sessionSetup;
-        this.#session = session;
-      } catch {
-        // A successful raw connection may have transferred its owned session
-        // before later model/lifecycle setup rejected. Recover that callback-
-        // latched session so cancellation already awaiting setup still routes
-        // through the real HID finalizer. A failed connect leaves it absent and
-        // owns its own lease rollback.
-        session = this.#session;
-      }
+      // `connect()` has no reviewed abort signal. Never await it from public
+      // finalization: the operation settles now, while openOwnedDmkSession's
+      // captured lease remains quarantined. A late rejection releases that
+      // lease; a late success is synchronously accepted by the callback above
+      // and exact-disconnected before the SDK can expose it to this operation.
+      void this.#sessionSetup.catch(() => undefined);
     }
 
     if (session) {
@@ -1482,8 +1633,7 @@ export class ReadOnlyPrepareOperation {
         postConnectCapture = captureHidSnapshot({
           clock: this.dependencies.clock,
           hidPort,
-          snapshotTimeoutMs:
-            PROVISIONAL_HID_RELEASE_POLICY.snapshotTimeoutMs,
+          snapshotTimeoutMs: PROVISIONAL_HID_RELEASE_POLICY.snapshotTimeoutMs,
         });
         this.#postConnectHidCapture = postConnectCapture;
       } catch {

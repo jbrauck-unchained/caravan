@@ -22,6 +22,27 @@ export const INSTALL_FAILURE_STAGES = [
 
 export type InstallFailureStage = (typeof INSTALL_FAILURE_STAGES)[number];
 
+export type OperationWatchdogStage = Exclude<InstallFailureStage, "release">;
+
+/**
+ * Provisional whole-stage watchdogs for the package-owned operation.
+ *
+ * Action-stage bounds intentionally exceed the pinned 60 second unlock
+ * allowance, while the connection handshake has a shorter fail-closed bound.
+ * Install receives the widest window because cancellation cannot prove that
+ * an already-dispatched mutation rolled back. Every value requires physical
+ * Chrome/Edge calibration before a stable release.
+ */
+export const PROVISIONAL_OPERATION_WATCHDOG_POLICY = Object.freeze({
+  discovery: 120_000,
+  connect: 30_000,
+  genuine: 90_000,
+  inspect: 90_000,
+  "install-dispatched": 600_000,
+  verify: 90_000,
+  open: 90_000,
+}) satisfies Readonly<Record<OperationWatchdogStage, number>>;
+
 type MutationMarker = "not-attempted" | "attempted";
 
 export type InstallFailureBoundary =
@@ -235,7 +256,8 @@ function readReviewedInstallVendorTag(
   if (tag === APP_ALREADY_INSTALLED_TAG || tag === OUT_OF_MEMORY_TAG) {
     return tag;
   }
-  return tag && Object.prototype.hasOwnProperty.call(PRE_MUTATION_VENDOR_ERRORS, tag)
+  return tag &&
+    Object.prototype.hasOwnProperty.call(PRE_MUTATION_VENDOR_ERRORS, tag)
     ? (tag as keyof typeof PRE_MUTATION_VENDOR_ERRORS)
     : undefined;
 }
@@ -293,8 +315,9 @@ function rememberDiagnostic(
 
 /**
  * Classify one non-success signal without retaining a raw vendor object.
- * Numeric watchdog durations deliberately live elsewhere until physical QA;
- * any timeout supplied here is only evidence that the watchdog fired.
+ * Numeric watchdog durations live in the provisional policy above until
+ * physical QA; a timeout supplied here is only evidence that its watchdog
+ * fired, never proof that native work was aborted or rolled back.
  */
 export function classifyInstallFailure(
   input: InstallFailureInput,
@@ -379,9 +402,9 @@ export function classifyInstallFailure(
       break;
     case "vendor-error":
       description = reviewedVendorTag
-        ? (PRE_MUTATION_VENDOR_ERRORS[
+        ? PRE_MUTATION_VENDOR_ERRORS[
             reviewedVendorTag as keyof typeof PRE_MUTATION_VENDOR_ERRORS
-          ] ?? { code: "internal", recoverable: false })
+          ] ?? { code: "internal", recoverable: false }
         : { code: "internal", recoverable: false };
       break;
   }
