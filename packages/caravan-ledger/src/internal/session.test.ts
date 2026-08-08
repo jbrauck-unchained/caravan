@@ -19,6 +19,7 @@ import {
   LedgerSessionEndedDuringSetupError,
   openOwnedDmkSession,
   type FinalizeOwnedDmkSessionOptions,
+  type OpenOwnedSessionOptions,
   type OwnedDmkSession,
   UnsupportedLedgerModelError,
 } from "./session";
@@ -199,6 +200,290 @@ describe("owned DMK session", () => {
     await owned.disconnect();
   });
 
+  it("offers connected ownership before gating and holds the lease until real finalization", async () => {
+    const calls: string[] = [];
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const connect = fake.connect.bind(fake);
+    vi.spyOn(fake, "connect").mockImplementation((candidate) => {
+      calls.push("connect");
+      return connect(candidate);
+    });
+    const observeLifecycle = fake.observeSessionLifecycle.bind(fake);
+    vi.spyOn(fake, "observeSessionLifecycle").mockImplementation((candidate) => {
+      calls.push("attach-lifecycle");
+      return observeLifecycle(candidate);
+    });
+    let transferred: OwnedDmkSession | undefined;
+    const takeConnectedSession = vi.fn((owned: OwnedDmkSession) => {
+      calls.push("take-ownership");
+      transferred = owned;
+      return true;
+    });
+    let handshakeReads = 0;
+    const options: OpenOwnedSessionOptions = {
+      clock: systemClock,
+      get takeConnectedSession() {
+        calls.push("snapshot-handshake");
+        handshakeReads += 1;
+        return takeConnectedSession;
+      },
+      modelPolicy: {
+        allows: (modelId) => {
+          calls.push("gate-model");
+          return modelId === "nanoS";
+        },
+      },
+    };
+
+    const owned = await openOwnedDmkSession(fake, device, options);
+
+    expect(transferred).toBe(owned);
+    expect(handshakeReads).toBe(1);
+    expect(takeConnectedSession).toHaveBeenCalledOnce();
+    expect(calls).toEqual([
+      "snapshot-handshake",
+      "connect",
+      "take-ownership",
+      "gate-model",
+      "attach-lifecycle",
+    ]);
+    expect(fake.resources().disconnectCount).toBe(0);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+    await owned.finalize(finalizationOptions(testBarrier().barrier));
+    expect(fake.resources().disconnectCount).toBe(1);
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("fails before lease acquisition when the ownership handshake cannot be snapshotted", async () => {
+    const getterError = new Error("symbolic ownership getter failure");
+    const acquireLease = vi.fn(() => {
+      throw new Error("lease acquisition must remain untouched");
+    });
+    const fake = new ScriptedDmk(systemClock);
+    const options: OpenOwnedSessionOptions = {
+      acquireLease,
+      modelPolicy: candidatePolicy,
+      get takeConnectedSession(): (session: OwnedDmkSession) => boolean {
+        throw getterError;
+      },
+    };
+
+    await expect(openOwnedDmkSession(fake, device, options)).rejects.toBe(
+      getterError,
+    );
+    expect(acquireLease).not.toHaveBeenCalled();
+    expect(fake.resources()).toMatchObject({
+      connectCount: 0,
+      disconnectCount: 0,
+    });
+  });
+
+  it.each([
+    {
+      name: "unsupported model",
+      create: () => ({
+        fake: new ScriptedDmk(systemClock).queueConnect({
+          type: "resolve" as const,
+          value: Object.freeze({
+            internalSessionId: "opaque-unsupported-session",
+            modelId: "nanoX",
+          }),
+        }),
+        expected: UnsupportedLedgerModelError,
+      }),
+    },
+    {
+      name: "missing model",
+      create: () => ({
+        fake: new ScriptedDmk(systemClock).queueConnect({
+          type: "resolve" as const,
+          value: missingModelSession,
+        }),
+        expected: UnsupportedLedgerModelError,
+      }),
+    },
+    {
+      name: "throwing model getter",
+      create: () => {
+        const expected = new Error("symbolic model snapshot failure");
+        const throwingModelSession: DmkSession = {
+          internalSessionId: "opaque-throwing-model-session",
+          get modelId(): string {
+            throw expected;
+          },
+        };
+        return {
+          fake: new ScriptedDmk(systemClock).queueConnect({
+            type: "resolve" as const,
+            value: throwingModelSession,
+          }),
+          expected,
+        };
+      },
+    },
+    {
+      name: "lifecycle attachment throw",
+      create: () => {
+        const expected = new Error("symbolic lifecycle attachment failure");
+        return {
+          fake: new ScriptedDmk(systemClock)
+            .queueConnect({
+              type: "resolve" as const,
+              value: allowedSession,
+            })
+            .queueSessionLifecycle([
+              { type: "throw-on-subscribe" as const, error: expected },
+            ]),
+          expected,
+        };
+      },
+    },
+    {
+      name: "synchronous lifecycle completion",
+      create: () => ({
+        fake: new ScriptedDmk(systemClock)
+          .queueConnect({
+            type: "resolve" as const,
+            value: allowedSession,
+          })
+          .queueSessionLifecycle([{ type: "complete" as const }]),
+        expected: LedgerSessionEndedDuringSetupError,
+      }),
+    },
+  ])(
+    "transfers $name cleanup to the accepted connected owner",
+    async ({ create }) => {
+      const { fake, expected } = create();
+      let transferred: OwnedDmkSession | undefined;
+      const opening = openOwnedDmkSession(fake, device, {
+        modelPolicy: candidatePolicy,
+        takeConnectedSession: (owned) => {
+          transferred = owned;
+          return true;
+        },
+      });
+
+      if (typeof expected === "function") {
+        await expect(opening).rejects.toBeInstanceOf(expected);
+      } else {
+        await expect(opening).rejects.toBe(expected);
+      }
+      expect(transferred).toBeDefined();
+      expect(fake.resources().disconnectCount).toBe(0);
+      expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+      const barrier = testBarrier("released");
+      await expect(
+        transferred!.finalize(finalizationOptions(barrier.barrier)),
+      ).resolves.toEqual({ hidRelease: "released", handoff: "ready" });
+      expect(barrier.arm).toHaveBeenCalledOnce();
+      expect(fake.resources().disconnectCount).toBe(1);
+      await transferred!.disconnect();
+      expect(fake.resources().disconnectCount).toBe(1);
+      const nextLease = acquireRuntimeLease();
+      nextLease.release();
+    },
+  );
+
+  it("keeps compatibility cleanup when connected ownership is declined", async () => {
+    let offered: OwnedDmkSession | undefined;
+    const fake = new ScriptedDmk(systemClock).queueConnect({
+      type: "resolve",
+      value: missingModelSession,
+    });
+
+    await expect(
+      openOwnedDmkSession(fake, device, {
+        modelPolicy: candidatePolicy,
+        takeConnectedSession: (owned) => {
+          offered = owned;
+          return false;
+        },
+      }),
+    ).rejects.toBeInstanceOf(UnsupportedLedgerModelError);
+    expect(offered).toBeDefined();
+    expect(fake.resources().disconnectCount).toBe(1);
+    const realBarrier = testBarrier("released");
+    await expect(
+      offered!.finalize(finalizationOptions(realBarrier.barrier)),
+    ).resolves.toEqual({
+      hidRelease: "unavailable",
+      handoff: "reconnect-required",
+    });
+    expect(realBarrier.arm).not.toHaveBeenCalled();
+    expect(fake.resources().disconnectCount).toBe(1);
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("keeps a throwing ownership callback primary and self-cleans exactly once", async () => {
+    const callbackError = new Error("symbolic ownership callback failure");
+    const modelPolicy = { allows: vi.fn(() => true) };
+    const fake = new ScriptedDmk(systemClock).queueConnect({
+      type: "resolve",
+      value: allowedSession,
+    });
+    let offered: OwnedDmkSession | undefined;
+
+    await expect(
+      openOwnedDmkSession(fake, device, {
+        modelPolicy,
+        takeConnectedSession: (owned) => {
+          offered = owned;
+          throw callbackError;
+        },
+      }),
+    ).rejects.toBe(callbackError);
+    expect(offered).toBeDefined();
+    expect(modelPolicy.allows).not.toHaveBeenCalled();
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      sessionLifecycleCount: 0,
+    });
+    await offered!.disconnect();
+    expect(fake.resources().disconnectCount).toBe(1);
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
+  it("contains reentrant real finalization from the accepted ownership callback", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const barrier = testBarrier("released");
+    let reentrantFinalization:
+      | Promise<{ readonly hidRelease: HidReleaseOutcome; readonly handoff: string }>
+      | undefined;
+
+    await expect(
+      openOwnedDmkSession(fake, device, {
+        modelPolicy: candidatePolicy,
+        takeConnectedSession: (owned) => {
+          reentrantFinalization = owned.finalize(
+            finalizationOptions(barrier.barrier),
+          );
+          return true;
+        },
+      }),
+    ).rejects.toBeInstanceOf(InactiveLedgerSessionError);
+    await expect(reentrantFinalization).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "ready",
+    });
+    expect(barrier.arm).toHaveBeenCalledOnce();
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      sessionLifecycleCount: 1,
+      activeSubscriptions: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+  });
+
   it("keeps the production allowlist empty and blocks before observation", async () => {
     const fake = new ScriptedDmk(systemClock).queueConnect({
       type: "resolve",
@@ -370,6 +655,35 @@ describe("owned DMK session", () => {
     const nextLease = acquireRuntimeLease();
     expect(nextLease.isCurrent()).toBe(true);
     nextLease.release();
+  });
+
+  it("preserves connect failure when injected lease release throws", async () => {
+    const connectionError = new Error("symbolic primary connection failure");
+    const releaseError = new Error("private-lease-release-canary");
+    const release = vi.fn(() => {
+      throw releaseError;
+    });
+    const fake = new ScriptedDmk(systemClock).queueConnect({
+      type: "reject",
+      error: connectionError,
+    });
+
+    await expect(
+      openOwnedDmkSession(fake, device, {
+        acquireLease: () => ({
+          generation: 91,
+          isCurrent: () => true,
+          invalidate: vi.fn(),
+          release,
+        }),
+        modelPolicy: candidatePolicy,
+      }),
+    ).rejects.toBe(connectionError);
+    expect(release).toHaveBeenCalledOnce();
+    expect(fake.resources()).toMatchObject({
+      connectCount: 1,
+      disconnectCount: 0,
+    });
   });
 
   it("authorizes only the three fixed protected actions after strict genuine proof", async () => {

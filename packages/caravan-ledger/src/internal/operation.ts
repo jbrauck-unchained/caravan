@@ -10,6 +10,10 @@ import {
   type VerifiedBitcoinInstallation,
 } from "./actions/installAndVerifyBitcoin";
 import { openBitcoin } from "./actions/openBitcoin";
+import {
+  captureHidSnapshot,
+  type HidSnapshotCaptureHandle,
+} from "./captureHidSnapshot";
 import type { Clock, ClockTimer } from "./clock";
 import {
   discoverOneDevice,
@@ -18,6 +22,9 @@ import {
 } from "./discovery";
 import type { DmkPort } from "./dmkPort";
 import { mapPreMutationError, type PreMutationPhase } from "./errorMap";
+import { selectHidReleaseCandidate } from "./hidCandidate";
+import type { HidPort } from "./hidPort";
+import { PROVISIONAL_HID_RELEASE_POLICY } from "./hidReleasePolicy";
 import {
   consumeInstallPlan,
   PlanStore,
@@ -35,6 +42,10 @@ import {
   UnsupportedLedgerModelError,
 } from "./session";
 import type { SupportedModelPolicy } from "./supportedModels";
+import {
+  createHidReleaseBarrier,
+  type HidReleaseBarrier,
+} from "./waitForHidRelease";
 
 type OperationPhase = Extract<
   BitcoinInstallerPhase,
@@ -151,6 +162,7 @@ function createInstallCancellationReservation(): InstallCancellationReservation 
 export interface ReadOnlyOperationDependencies {
   readonly acquireLease: () => RuntimeLease;
   readonly clock: Clock;
+  readonly createHidPort: () => HidPort;
   readonly createPort: () => DmkPort;
   readonly getSupport: () => BitcoinInstallerSupport;
   readonly instanceGeneration: number;
@@ -271,6 +283,18 @@ export class ReadOnlyPrepareOperation {
 
   #port: DmkPort | undefined;
 
+  #hidPortCreationAttempted = false;
+
+  #hidPort: HidPort | undefined;
+
+  #preConnectHidCapture: HidSnapshotCaptureHandle | undefined;
+
+  #postConnectHidCapture: HidSnapshotCaptureHandle | undefined;
+
+  #hidBarrier: HidReleaseBarrier | undefined;
+
+  #hidBarrierSetup: Promise<HidReleaseBarrier> | undefined;
+
   #session: OwnedDmkSession | undefined;
 
   #sessionSetup: Promise<OwnedDmkSession> | undefined;
@@ -300,6 +324,8 @@ export class ReadOnlyPrepareOperation {
   #primaryError: BitcoinInstallerError | undefined;
 
   #provenInstallResult: Omit<BitcoinInstallResult, "handoff"> | undefined;
+
+  #handoff: BitcoinInstallResult["handoff"] = "reconnect-required";
 
   #openCancellationRequested = false;
 
@@ -370,7 +396,7 @@ export class ReadOnlyPrepareOperation {
         // A source-internal acquisition seam may also reenter before returning.
         // Invalidate authority here; the synchronous-entry barrier keeps the
         // finalizer from releasing it until this acquisition stack unwinds.
-        lease.invalidate();
+        this.#invalidateLeaseSafely(lease);
         return this.#result;
       }
 
@@ -387,6 +413,13 @@ export class ReadOnlyPrepareOperation {
         );
         return this.#result;
       }
+
+      // This starts `navigator.hid.getDevices()` in the caller's original
+      // gesture stack and, critically, before discovery can open the chooser.
+      // Failure only makes later handoff evidence unavailable; it does not
+      // change the management operation's primary truth.
+      this.#startPreConnectHidCapture(epoch);
+      if (!this.#isLive(epoch)) return this.#result;
 
       this.#transition({
         phase: "selecting-device",
@@ -908,16 +941,27 @@ export class ReadOnlyPrepareOperation {
       const sessionSetup = Promise.resolve().then(() =>
         openOwnedDmkSession(port, device, {
           acquireLease: () => lease,
+          clock: this.dependencies.clock,
           modelPolicy: this.dependencies.modelPolicy,
+          takeConnectedSession: (connectedSession) => {
+            // Take cleanup ownership before model/lifecycle setup can fail or
+            // reenter. Candidate setup is latched in this same synchronous
+            // callback, so every post-connect terminal uses the real barrier.
+            this.#session = connectedSession;
+            void this.#ensureHidBarrier(connectedSession);
+            return true;
+          },
         }),
       );
       this.#sessionSetup = sessionSetup;
       const session = await sessionSetup;
       this.#session = session;
-      if (!this.#isLive(epoch)) {
-        await this.#disconnectSession(session);
-        return;
-      }
+      // Latch setup before invoking the post-connect browser snapshot. A
+      // reentrant terminal request therefore waits for this exact candidate
+      // decision and can never fall back to compatibility disconnect().
+      const hidBarrierSetup = this.#ensureHidBarrier(session);
+      await hidBarrierSetup;
+      if (!this.#isLive(epoch)) return;
 
       this.#unsubscribeSessionInvalidation = session.onInvalidated(() => {
         this.#handleSessionInvalidation(epoch);
@@ -1039,7 +1083,6 @@ export class ReadOnlyPrepareOperation {
 
   #handleSessionInvalidation(epoch: number): void {
     if (!this.#isLive(epoch)) return;
-    this.dependencies.planStore.invalidateAll();
     switch (this.#phase) {
       case "installing":
         if (this.#installDispatchEvidence === "not-dispatched") {
@@ -1214,7 +1257,7 @@ export class ReadOnlyPrepareOperation {
     this.#settleInstallSuccess(
       Object.freeze({
         ...this.#provenInstallResult,
-        handoff: "reconnect-required",
+        handoff: this.#handoff,
       }),
     );
   }
@@ -1260,20 +1303,25 @@ export class ReadOnlyPrepareOperation {
     this.#cleanupPromise = cleanupPromise;
 
     this.#epoch += 1;
-    const handle = this.#activeHandle;
-    this.#activeHandle = undefined;
-    try {
-      handle?.cancel();
-    } catch {
-      // Local cleanup remains authoritative over a faulty adapter handle.
+    if (!this.#leaseTransferredToSessionSetup) {
+      // Before connection ownership transfers, there is no session finalizer
+      // to block discovery/capture work or reserve the generation. Keep this
+      // synchronous invalidation so a reentrant chooser callback cannot admit
+      // a competing operation before its stack unwinds.
+      const handle = this.#activeHandle;
+      this.#activeHandle = undefined;
+      try {
+        handle?.cancel();
+      } catch {
+        // Local cleanup remains authoritative over a faulty adapter handle.
+      }
+      try {
+        this.#preConnectHidCapture?.cancel();
+      } catch {
+        // Snapshot cancellation remains conservative and locally contained.
+      }
+      this.#invalidateLeaseSafely(this.#lease);
     }
-
-    this.dependencies.planStore.invalidateAll();
-    this.#lease?.invalidate();
-    this.#plan = undefined;
-    this.#clearPlanExpiryTimer();
-    this.#unsubscribeSessionInvalidation?.();
-    this.#unsubscribeSessionInvalidation = undefined;
 
     void this.#completeFinalization().then(resolveCleanup, rejectCleanup);
     return cleanupPromise;
@@ -1301,14 +1349,37 @@ export class ReadOnlyPrepareOperation {
         session = await this.#sessionSetup;
         this.#session = session;
       } catch {
-        // Session setup owns its failed-connect lease rollback.
+        // A successful raw connection may have transferred its owned session
+        // before later model/lifecycle setup rejected. Recover that callback-
+        // latched session so cancellation already awaiting setup still routes
+        // through the real HID finalizer. A failed connect leaves it absent and
+        // owns its own lease rollback.
+        session = this.#session;
       }
     }
 
     if (session) {
-      await this.#disconnectSession(session);
-    } else if (!this.#leaseTransferredToSessionSetup) {
-      this.#lease?.release();
+      const hidBarrier = await this.#ensureHidBarrier(session);
+      try {
+        const evidence = await session.finalize({
+          clock: this.dependencies.clock,
+          hidBarrier,
+          invalidatePlans: () => this.#invalidateOperationAuthority(),
+          clearPrivateReferences: () => this.#clearPrivateReferences(),
+        });
+        // HID details remain private. Only the frozen public handoff vocabulary
+        // contributes to the independently proven installation result.
+        this.#handoff = evidence.handoff;
+      } catch {
+        this.#handoff = "reconnect-required";
+      }
+    } else {
+      this.#invalidateOperationAuthority();
+      this.#clearHidReferences();
+      if (!this.#leaseTransferredToSessionSetup) {
+        this.#releaseLeaseSafely(this.#lease);
+      }
+      this.#clearNonSessionReferences();
     }
 
     let terminal = this.#terminalIntent ?? "failed";
@@ -1350,12 +1421,173 @@ export class ReadOnlyPrepareOperation {
     }
   }
 
-  async #disconnectSession(session: OwnedDmkSession): Promise<void> {
+  #startPreConnectHidCapture(epoch: number): void {
+    if (this.#hidPortCreationAttempted) return;
+    this.#hidPortCreationAttempted = true;
+
+    let hidPort: HidPort;
     try {
-      await session.disconnect();
+      hidPort = this.dependencies.createHidPort();
     } catch {
-      // The primary public result remains stable and the session releases its
-      // lease in its own finally path.
+      return;
     }
+    if (!this.#isLive(epoch)) return;
+    this.#hidPort = hidPort;
+
+    let capture: HidSnapshotCaptureHandle;
+    try {
+      capture = captureHidSnapshot({
+        clock: this.dependencies.clock,
+        hidPort,
+        snapshotTimeoutMs: PROVISIONAL_HID_RELEASE_POLICY.snapshotTimeoutMs,
+      });
+    } catch {
+      return;
+    }
+    this.#preConnectHidCapture = capture;
+    if (!this.#isLive(epoch)) {
+      try {
+        capture.cancel();
+      } catch {
+        // A terminal reentrant capture remains unavailable by construction.
+      }
+    }
+  }
+
+  #ensureHidBarrier(session: OwnedDmkSession): Promise<HidReleaseBarrier> {
+    if (this.#hidBarrierSetup) return this.#hidBarrierSetup;
+
+    let resolveBarrier!: (barrier: HidReleaseBarrier) => void;
+    const setup = new Promise<HidReleaseBarrier>((resolve) => {
+      resolveBarrier = resolve;
+    });
+    // Latch before post-connect capture invokes the browser boundary.
+    this.#hidBarrierSetup = setup;
+
+    void this.#completeHidBarrierSetup(session).then(resolveBarrier, () => {
+      resolveBarrier(this.#createUnavailableHidBarrier());
+    });
+    return setup;
+  }
+
+  async #completeHidBarrierSetup(
+    session: OwnedDmkSession,
+  ): Promise<HidReleaseBarrier> {
+    const hidPort = this.#hidPort;
+    let postConnectCapture: HidSnapshotCaptureHandle | undefined;
+    if (hidPort) {
+      try {
+        // Deliberately invoked before any await after session ownership is
+        // returned, keeping the before/after evidence as narrow as possible.
+        postConnectCapture = captureHidSnapshot({
+          clock: this.dependencies.clock,
+          hidPort,
+          snapshotTimeoutMs:
+            PROVISIONAL_HID_RELEASE_POLICY.snapshotTimeoutMs,
+        });
+        this.#postConnectHidCapture = postConnectCapture;
+      } catch {
+        postConnectCapture = undefined;
+      }
+    }
+
+    let modelId: string | undefined;
+    try {
+      modelId = session.modelId;
+    } catch {
+      modelId = undefined;
+    }
+
+    const [before, after] = await Promise.all([
+      this.#preConnectHidCapture?.result ?? Promise.resolve(undefined),
+      postConnectCapture?.result ?? Promise.resolve(undefined),
+    ]);
+    const candidate = selectHidReleaseCandidate({ before, after, modelId });
+    const barrier = hidPort
+      ? createHidReleaseBarrier({
+          candidate,
+          clock: this.dependencies.clock,
+          hidPort,
+        })
+      : this.#createUnavailableHidBarrier();
+    this.#hidBarrier = barrier;
+    return barrier;
+  }
+
+  #createUnavailableHidBarrier(): HidReleaseBarrier {
+    const unavailablePort: HidPort = Object.freeze({
+      getGrantedDevices: () => Promise.resolve(Object.freeze([])),
+      subscribeToDeviceChanges: () => () => undefined,
+    });
+    return createHidReleaseBarrier({
+      candidate: Object.freeze({ kind: "unavailable" }),
+      clock: this.dependencies.clock,
+      hidPort: unavailablePort,
+    });
+  }
+
+  #invalidateOperationAuthority(): void {
+    const unsubscribe = this.#unsubscribeSessionInvalidation;
+    this.#unsubscribeSessionInvalidation = undefined;
+    try {
+      unsubscribe?.();
+    } catch {
+      // Operation authority still expires when an observer teardown is faulty.
+    }
+    try {
+      this.dependencies.planStore.invalidateAll();
+    } catch {
+      // Local plan references are cleared below even if the store is hostile.
+    }
+    this.#plan = undefined;
+    this.#clearPlanExpiryTimer();
+  }
+
+  #invalidateLeaseSafely(lease: RuntimeLease | undefined): void {
+    try {
+      lease?.invalidate();
+    } catch {
+      // Early cleanup remains total for an injected faulty lease boundary.
+    }
+  }
+
+  #releaseLeaseSafely(lease: RuntimeLease | undefined): void {
+    try {
+      lease?.release();
+    } catch {
+      // A cleanup failure cannot prevent the public terminal settlement.
+    }
+  }
+
+  #clearHidReferences(): void {
+    try {
+      this.#preConnectHidCapture?.cancel();
+    } catch {
+      // Snapshot teardown remains best effort after evidence is settled.
+    }
+    try {
+      this.#postConnectHidCapture?.cancel();
+    } catch {
+      // Snapshot teardown remains best effort after evidence is settled.
+    }
+    this.#preConnectHidCapture = undefined;
+    this.#postConnectHidCapture = undefined;
+    this.#hidBarrier = undefined;
+    this.#hidBarrierSetup = undefined;
+    this.#hidPort = undefined;
+  }
+
+  #clearPrivateReferences(): void {
+    this.#clearHidReferences();
+    this.#clearNonSessionReferences();
+  }
+
+  #clearNonSessionReferences(): void {
+    this.#activeHandle = undefined;
+    this.#port = undefined;
+    this.#session = undefined;
+    this.#sessionSetup = undefined;
+    this.#lease = undefined;
+    this.#planContext = undefined;
   }
 }

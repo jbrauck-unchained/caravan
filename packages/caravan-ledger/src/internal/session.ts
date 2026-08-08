@@ -97,6 +97,14 @@ export interface OpenOwnedSessionOptions {
   readonly modelPolicy?: SupportedModelPolicy;
   readonly acquireLease?: () => RuntimeLease;
   readonly clock?: Clock;
+  /**
+   * Synchronously accept cleanup ownership immediately after connection.
+   *
+   * Return exact `true` only after retaining the session and latching any
+   * cleanup evidence needed by the caller. Any other return or a throw leaves
+   * post-connect setup rollback owned by `openOwnedDmkSession`.
+   */
+  readonly takeConnectedSession?: (session: OwnedDmkSession) => boolean;
 }
 
 export interface FinalizeOwnedDmkSessionOptions {
@@ -241,7 +249,7 @@ export class OwnedDmkSession {
     return this.#lease.generation;
   }
 
-  /** The exact connected model value accepted by this session's model gate. */
+  /** Immutable connected model snapshot that the subsequent gate evaluates. */
   get modelId(): string {
     const modelId = this.#modelIdSnapshot;
     if (modelId === undefined) throw new UnsupportedLedgerModelError();
@@ -775,13 +783,20 @@ export async function openOwnedDmkSession(
 ): Promise<OwnedDmkSession> {
   const modelPolicy = options.modelPolicy ?? productionSupportedModelPolicy;
   const clock = options.clock ?? systemClock;
+  // Snapshot the handshake before connection. Later option mutation cannot
+  // redirect ownership after a live native session exists.
+  const takeConnectedSession = options.takeConnectedSession;
   const lease = (options.acquireLease ?? acquireRuntimeLease)();
 
   let session: DmkSession;
   try {
     session = await port.connect(device);
   } catch (error) {
-    lease.release();
+    try {
+      lease.release();
+    } catch {
+      // The connection failure remains primary over lease cleanup faults.
+    }
     throw error;
   }
 
@@ -802,7 +817,14 @@ export async function openOwnedDmkSession(
     clock,
     modelIdSnapshot,
   );
+  let setupCleanupTransferred = false;
   try {
+    if (takeConnectedSession) {
+      // The wrapper is now available, but model gating and lifecycle
+      // attachment have deliberately not begun. Exact `true` is the sole
+      // transfer signal; a throw remains primary and uses legacy rollback.
+      setupCleanupTransferred = takeConnectedSession(ownedSession) === true;
+    }
     if (modelReadFailed) throw modelReadFailure;
     if (
       typeof modelIdSnapshot !== "string" ||
@@ -818,10 +840,12 @@ export async function openOwnedDmkSession(
     }
     return ownedSession;
   } catch (primaryError) {
-    try {
-      await ownedSession.disconnect();
-    } catch {
-      // The setup failure remains primary and contains no cleanup metadata.
+    if (!setupCleanupTransferred) {
+      try {
+        await ownedSession.disconnect();
+      } catch {
+        // The setup failure remains primary and contains no cleanup metadata.
+      }
     }
     throw primaryError;
   }

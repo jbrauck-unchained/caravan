@@ -8,6 +8,13 @@ import { systemClock } from "./internal/clock";
 import type { Clock, ClockTimer } from "./internal/clock";
 import type { DmkDiscoveredDevice, DmkSession } from "./internal/dmkPort";
 import {
+  LEDGER_HID_VENDOR_ID,
+  type HidDeviceIdentity,
+  type HidDeviceSnapshot,
+  type HidPort,
+} from "./internal/hidPort";
+import { PROVISIONAL_HID_RELEASE_POLICY } from "./internal/hidReleasePolicy";
+import {
   acquireRuntimeLease,
   resetRuntimeLeaseForTesting,
 } from "./internal/runtimeLease";
@@ -264,6 +271,77 @@ describe("Bitcoin app installer facade", () => {
     });
     expect(fake.resources().discoveryCount).toBe(1);
     await installer.dispose();
+  });
+
+  it("lazily composes observed HID release into a ready handoff", async () => {
+    const identity = Object.freeze({}) as HidDeviceIdentity;
+    const snapshot = (opened: boolean): HidDeviceSnapshot =>
+      Object.freeze({
+        identity,
+        vendorId: LEDGER_HID_VENDOR_ID,
+        productId: 0x1000,
+        opened,
+      });
+    const snapshots: readonly (readonly HidDeviceSnapshot[])[] = [
+      Object.freeze([snapshot(false)]),
+      Object.freeze([snapshot(true)]),
+      Object.freeze([snapshot(true)]),
+      Object.freeze([snapshot(false)]),
+    ];
+    let reads = 0;
+    const listeners = new Set<
+      Parameters<HidPort["subscribeToDeviceChanges"]>[0]
+    >();
+    const hidPort: HidPort = {
+      getGrantedDevices: () => {
+        const value = snapshots[reads] ?? snapshots.at(-1) ?? [];
+        reads += 1;
+        return Promise.resolve(value);
+      },
+      subscribeToDeviceChanges: (listener) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+    const createHidPort = vi.fn(() => hidPort);
+    const fake = queueSuccessfulPreparation(
+      new ScriptedDmk(systemClock),
+      true,
+    ).queueAction("open-bitcoin", [
+      {
+        type: "next",
+        value: {
+          status: "completed",
+          output: { appOpened: true },
+        },
+      },
+    ]);
+    const installer = createInstaller(fake, { createHidPort });
+    const phases: string[] = [];
+    installer.subscribe((event) => phases.push(event.phase));
+
+    expect(createHidPort).not.toHaveBeenCalled();
+    const plan = await installer.prepare();
+    expect(createHidPort).toHaveBeenCalledTimes(1);
+    await expect(installer.install(plan)).resolves.toEqual({
+      status: "already-installed",
+      appOpen: true,
+      handoff: "ready",
+    });
+    expect(phases.slice(-3)).toEqual([
+      "opening-bitcoin",
+      "releasing-device",
+      "ready-for-webusb",
+    ]);
+    expect(reads).toBe(4);
+    expect(listeners.size).toBe(0);
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
   });
 
   it("uses an already-installed plan as a no-op and preserves open refusal", async () => {
@@ -874,11 +952,13 @@ describe("Bitcoin app installer facade", () => {
   it("fails plan authority closed when the injected clock rolls backward at timer delivery", async () => {
     let now = 1_000;
     let expiryCallback: (() => void) | undefined;
+    const scheduledDurations: number[] = [];
     const timer = Object.freeze({}) as ClockTimer;
     const hostileClock: Clock = {
       now: () => now,
       monotonicNow: () => now,
-      setTimeout: (callback) => {
+      setTimeout: (callback, delayMs) => {
+        scheduledDurations.push(delayMs);
         expiryCallback = callback;
         return timer;
       },
@@ -906,7 +986,11 @@ describe("Bitcoin app installer facade", () => {
       code: "internal",
       phase: "failed",
     });
-    expect(hostileClock.clearTimeout).toHaveBeenCalledTimes(1);
+    expect(hostileClock.clearTimeout).toHaveBeenCalledTimes(2);
+    expect(scheduledDurations).toEqual([
+      100,
+      PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+    ]);
     expect(fake.resources()).toMatchObject({
       disconnectCount: 1,
       activeSubscriptions: 0,

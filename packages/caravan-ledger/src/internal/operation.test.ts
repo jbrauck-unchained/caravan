@@ -5,6 +5,13 @@ import type { BitcoinInstallPlan } from "../types";
 import { systemClock, type Clock, type ClockTimer } from "./clock";
 import type { DmkDiscoveredDevice, DmkSession } from "./dmkPort";
 import {
+  LEDGER_HID_VENDOR_ID,
+  type HidDeviceIdentity,
+  type HidDeviceSnapshot,
+  type HidPort,
+} from "./hidPort";
+import { PROVISIONAL_HID_RELEASE_POLICY } from "./hidReleasePolicy";
+import {
   ReadOnlyPrepareOperation,
   type OperationTerminalPhase,
 } from "./operation";
@@ -12,9 +19,14 @@ import { PlanStore } from "./planStore";
 import {
   acquireRuntimeLease,
   resetRuntimeLeaseForTesting,
+  RuntimeLeaseBusyError,
   type RuntimeLease,
 } from "./runtimeLease";
-import { createCandidateModelPolicyForTesting } from "./supportedModels";
+import { OwnedDmkSession } from "./session";
+import {
+  createCandidateModelPolicyForTesting,
+  type SupportedModelPolicy,
+} from "./supportedModels";
 import { ScriptedDmk } from "./testing/scriptedDmk";
 
 const device: DmkDiscoveredDevice = Object.freeze({
@@ -25,6 +37,64 @@ const session: DmkSession = Object.freeze({
   modelId: "nanoS",
 });
 const candidatePolicy = createCandidateModelPolicyForTesting(["nanoS"]);
+const unavailableHidPortFactory = (): HidPort => {
+  throw new Error("HID observation is unavailable in this test.");
+};
+
+function hidSnapshot(
+  identity: HidDeviceIdentity,
+  opened: boolean,
+): HidDeviceSnapshot {
+  return Object.freeze({
+    identity,
+    vendorId: LEDGER_HID_VENDOR_ID,
+    productId: 0x1000,
+    opened,
+  });
+}
+
+class SequencedHidPort implements HidPort {
+  readonly #snapshots: readonly (readonly HidDeviceSnapshot[])[];
+
+  readonly #onRead: (readNumber: number) => void;
+
+  #readCount = 0;
+
+  #listeners = new Set<Parameters<HidPort["subscribeToDeviceChanges"]>[0]>();
+
+  constructor(
+    snapshots: readonly (readonly HidDeviceSnapshot[])[],
+    onRead: (readNumber: number) => void = () => undefined,
+  ) {
+    this.#snapshots = snapshots;
+    this.#onRead = onRead;
+  }
+
+  get readCount(): number {
+    return this.#readCount;
+  }
+
+  get activeListeners(): number {
+    return this.#listeners.size;
+  }
+
+  getGrantedDevices(): Promise<readonly HidDeviceSnapshot[]> {
+    this.#readCount += 1;
+    this.#onRead(this.#readCount);
+    const snapshots =
+      this.#snapshots[this.#readCount - 1] ??
+      this.#snapshots.at(-1) ??
+      Object.freeze([]);
+    return Promise.resolve(snapshots);
+  }
+
+  subscribeToDeviceChanges(
+    listener: Parameters<HidPort["subscribeToDeviceChanges"]>[0],
+  ): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+}
 
 function queuePreparation(
   fake: ScriptedDmk,
@@ -63,8 +133,11 @@ interface OperationHarness {
 function createOperationHarness(
   fake: ScriptedDmk,
   options: {
+    readonly acquireLease?: () => RuntimeLease;
     readonly clock?: Clock;
+    readonly createHidPort?: () => HidPort;
     readonly instanceGeneration?: number;
+    readonly modelPolicy?: SupportedModelPolicy;
     readonly onEvent?: (event: BitcoinInstallerEvent) => void;
     readonly planStore?: PlanStore;
     readonly planTtlMs?: number;
@@ -80,12 +153,13 @@ function createOperationHarness(
       ) => void
     >();
   const operation = new ReadOnlyPrepareOperation({
-    acquireLease: acquireRuntimeLease,
+    acquireLease: options.acquireLease ?? acquireRuntimeLease,
     clock,
+    createHidPort: options.createHidPort ?? unavailableHidPortFactory,
     createPort: () => fake,
     getSupport: () => ({ supported: true }),
     instanceGeneration: options.instanceGeneration ?? 41,
-    modelPolicy: candidatePolicy,
+    modelPolicy: options.modelPolicy ?? candidatePolicy,
     onEvent: (event) => {
       events.push(event);
       options.onEvent?.(event);
@@ -222,6 +296,7 @@ describe("read-only operation races", () => {
     const installer = createBitcoinAppInstallerCore({
       acquireLease,
       clock: systemClock,
+      createHidPort: unavailableHidPortFactory,
       createPort,
       getSupport: () => {
         installer.cancel();
@@ -266,6 +341,41 @@ describe("read-only operation races", () => {
     });
     expect(lease.invalidate).toHaveBeenCalledTimes(1);
     expect(lease.release).toHaveBeenCalledTimes(1);
+    expect(createPort).not.toHaveBeenCalled();
+  });
+
+  it("settles reentrant early cancellation despite hostile lease cleanup", async () => {
+    const leaseFailure = new Error("private-lease-cleanup-canary");
+    const lease: RuntimeLease = {
+      generation: 7,
+      isCurrent: vi.fn(() => true),
+      invalidate: vi.fn(() => {
+        throw leaseFailure;
+      }),
+      release: vi.fn(() => {
+        throw leaseFailure;
+      }),
+    };
+    const createPort = vi.fn(() => new ScriptedDmk(systemClock));
+    const installer = createBitcoinAppInstallerCore({
+      acquireLease: () => {
+        installer.cancel();
+        return lease;
+      },
+      clock: systemClock,
+      createHidPort: unavailableHidPortFactory,
+      createPort,
+      getSupport: () => ({ supported: true }),
+      modelPolicy: candidatePolicy,
+    });
+
+    await expect(installer.prepare()).rejects.toMatchObject({
+      code: "cancelled",
+      phase: "idle",
+    });
+    await expect(installer.dispose()).resolves.toBeUndefined();
+    expect(lease.invalidate).toHaveBeenCalledOnce();
+    expect(lease.release).toHaveBeenCalledOnce();
     expect(createPort).not.toHaveBeenCalled();
   });
 
@@ -383,6 +493,7 @@ describe("read-only operation races", () => {
     const operation = new ReadOnlyPrepareOperation({
       acquireLease,
       clock: systemClock,
+      createHidPort: unavailableHidPortFactory,
       createPort,
       getSupport: () => ({ supported: true }),
       instanceGeneration: 1,
@@ -411,8 +522,534 @@ describe("mutation operation orchestration", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     resetRuntimeLeaseForTesting();
+  });
+
+  it("captures around connection and releases the lease only after observed HID closure", async () => {
+    const trace: string[] = [];
+    const identity = Object.freeze({}) as HidDeviceIdentity;
+    const closed = hidSnapshot(identity, false);
+    const opened = hidSnapshot(identity, true);
+    const hidPort = new SequencedHidPort(
+      [
+        Object.freeze([closed]),
+        Object.freeze([opened]),
+        Object.freeze([opened]),
+        Object.freeze([opened]),
+        Object.freeze([closed]),
+      ],
+      (read) => trace.push(`hid-${read}`),
+    );
+    let leaseCurrent = true;
+    const lease: RuntimeLease = {
+      generation: 73,
+      isCurrent: () => leaseCurrent,
+      invalidate: () => {
+        trace.push("lease-invalidate");
+        leaseCurrent = false;
+      },
+      release: () => trace.push("lease-release"),
+    };
+    const planStore = new PlanStore(systemClock);
+    const invalidatePlans = planStore.invalidateAll.bind(planStore);
+    vi.spyOn(planStore, "invalidateAll").mockImplementation(() => {
+      trace.push("plans-invalidate");
+      invalidatePlans();
+    });
+
+    const fake = queuePreparation(
+      new ScriptedDmk(systemClock),
+      true,
+    ).queueAction("open-bitcoin", [
+      {
+        type: "next",
+        value: {
+          status: "completed",
+          output: { appOpened: true },
+        },
+      },
+    ]);
+    const startDiscovery = fake.startDiscovery.bind(fake);
+    vi.spyOn(fake, "startDiscovery").mockImplementation(() => {
+      trace.push("chooser");
+      return startDiscovery();
+    });
+    const disconnect = fake.disconnect.bind(fake);
+    vi.spyOn(fake, "disconnect").mockImplementation((ownedSession) => {
+      trace.push("disconnect");
+      return disconnect(ownedSession);
+    });
+    const harness = createOperationHarness(fake, {
+      acquireLease: () => lease,
+      createHidPort: () => hidPort,
+      onEvent: (event) => {
+        if (event.phase === "ready-for-webusb") trace.push("terminal");
+      },
+      planStore,
+    });
+
+    const preparation = harness.operation.begin();
+    expect(trace.slice(0, 2)).toEqual(["hid-1", "chooser"]);
+    const plan = await preparation;
+    expect(hidPort.readCount).toBe(2);
+
+    const installation = harness.operation.install(plan);
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      if (hidPort.readCount === 4) break;
+      await Promise.resolve();
+    }
+    expect(harness.operation.phase).toBe("releasing-device");
+    expect(hidPort.readCount).toBe(4);
+    expect(trace).not.toContain("lease-release");
+    expect(trace).not.toContain("terminal");
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_HID_RELEASE_POLICY.pollIntervalMs,
+    );
+    await expect(installation).resolves.toEqual({
+      status: "already-installed",
+      appOpen: true,
+      handoff: "ready",
+    });
+    expect(trace).toEqual([
+      "hid-1",
+      "chooser",
+      "hid-2",
+      "lease-invalidate",
+      "plans-invalidate",
+      "hid-3",
+      "disconnect",
+      "hid-4",
+      "hid-5",
+      "lease-release",
+      "terminal",
+    ]);
+    expect(hidPort.activeListeners).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("preserves proven result fields and emits the same terminal event for ambiguous HID evidence", async () => {
+    const firstIdentity = Object.freeze({}) as HidDeviceIdentity;
+    const secondIdentity = Object.freeze({}) as HidDeviceIdentity;
+    const hidPort = new SequencedHidPort([
+      Object.freeze([
+        hidSnapshot(firstIdentity, false),
+        hidSnapshot(secondIdentity, false),
+      ]),
+      Object.freeze([
+        hidSnapshot(firstIdentity, true),
+        hidSnapshot(secondIdentity, true),
+      ]),
+    ]);
+    const fake = queuePreparation(
+      new ScriptedDmk(systemClock),
+      true,
+    ).queueAction("open-bitcoin", [
+      {
+        type: "next",
+        value: {
+          status: "completed",
+          output: { appOpened: false },
+        },
+      },
+    ]);
+    const harness = createOperationHarness(fake, {
+      createHidPort: () => hidPort,
+    });
+    const plan = await harness.operation.begin();
+
+    await expect(harness.operation.install(plan)).resolves.toEqual({
+      status: "already-installed",
+      appOpen: false,
+      handoff: "reconnect-required",
+    });
+    expect(harness.events.at(-1)).toEqual({ phase: "ready-for-webusb" });
+    expect(harness.operation.phase).toBe("ready-for-webusb");
+    expect(hidPort.readCount).toBe(2);
+    expect(hidPort.activeListeners).toBe(0);
+    expect(fake.resources().disconnectCount).toBe(1);
+  });
+
+  it("routes connected cancellation through the same HID-aware finalizer", async () => {
+    const identity = Object.freeze({}) as HidDeviceIdentity;
+    const closed = hidSnapshot(identity, false);
+    const opened = hidSnapshot(identity, true);
+    const hidPort = new SequencedHidPort([
+      Object.freeze([closed]),
+      Object.freeze([opened]),
+      Object.freeze([opened]),
+      Object.freeze([closed]),
+    ]);
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({ type: "resolve", value: session })
+      .queueSessionLifecycle([{ type: "never" }])
+      .queueAction("genuine", [{ type: "never" }]);
+    const harness = createOperationHarness(fake, {
+      createHidPort: () => hidPort,
+    });
+
+    const preparation = harness.operation.begin();
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      if (harness.operation.phase === "checking-genuine") break;
+      await Promise.resolve();
+    }
+    expect(harness.operation.phase).toBe("checking-genuine");
+    const firstCancel = harness.operation.cancel();
+    const secondCancel = harness.operation.cancel();
+    await Promise.all([firstCancel, secondCancel]);
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "cancelled",
+      phase: "checking-genuine",
+    });
+    expect(harness.operation.phase).toBe("cancelled");
+    expect(hidPort.readCount).toBe(4);
+    expect(hidPort.activeListeners).toBe(0);
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+  });
+
+  it("latches post-connect HID setup before reentrant cancellation", async () => {
+    const identity = Object.freeze({}) as HidDeviceIdentity;
+    const closed = hidSnapshot(identity, false);
+    const opened = hidSnapshot(identity, true);
+    const operationRef: { current?: ReadOnlyPrepareOperation } = {};
+    const hidPort = new SequencedHidPort(
+      [
+        Object.freeze([closed]),
+        Object.freeze([opened]),
+        Object.freeze([opened]),
+        Object.freeze([closed]),
+      ],
+      (read) => {
+        if (read === 2) void operationRef.current?.cancel();
+      },
+    );
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({ type: "resolve", value: session })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const harness = createOperationHarness(fake, {
+      createHidPort: () => hidPort,
+    });
+    operationRef.current = harness.operation;
+
+    await expect(harness.operation.begin()).rejects.toMatchObject({
+      code: "cancelled",
+      phase: "connecting",
+    });
+
+    expect(harness.operation.phase).toBe("cancelled");
+    expect(hidPort.readCount).toBe(4);
+    expect(hidPort.activeListeners).toBe(0);
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      actionCount: 0,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+  });
+
+  it("owns every post-connect setup failure through the real session finalizer", async () => {
+    const modelGetterFailure = new Error("private-model-getter-canary");
+    const setupCases: readonly {
+      readonly expectedCode: "internal" | "unsupported-device";
+      readonly lifecycleFailure?: Error;
+      readonly name: string;
+      readonly connectedSession: DmkSession;
+    }[] = [
+      {
+        name: "unsupported model",
+        connectedSession: Object.freeze({
+          internalSessionId: "unsupported-model-session",
+          modelId: "nanoX",
+        }),
+        expectedCode: "unsupported-device",
+      },
+      {
+        name: "missing model",
+        connectedSession: Object.freeze({
+          internalSessionId: "missing-model-session",
+        }),
+        expectedCode: "unsupported-device",
+      },
+      {
+        name: "throwing model getter",
+        connectedSession: {
+          internalSessionId: "throwing-model-session",
+          get modelId(): string {
+            throw modelGetterFailure;
+          },
+        },
+        expectedCode: "internal",
+      },
+      {
+        name: "lifecycle attachment failure",
+        connectedSession: session,
+        lifecycleFailure: new Error("private-lifecycle-setup-canary"),
+        expectedCode: "internal",
+      },
+    ];
+    const finalizeSpy = vi.spyOn(OwnedDmkSession.prototype, "finalize");
+    const compatibilityDisconnectSpy = vi.spyOn(
+      OwnedDmkSession.prototype,
+      "disconnect",
+    );
+
+    try {
+      for (const [index, setupCase] of setupCases.entries()) {
+        const fake = new ScriptedDmk(systemClock)
+          .queueDiscovery([{ type: "next", value: device }])
+          .queueConnect({
+            type: "resolve",
+            value: setupCase.connectedSession,
+          })
+          .queueDisconnect({ type: "never" });
+        if (setupCase.lifecycleFailure) {
+          fake.queueSessionLifecycle([
+            {
+              type: "throw-on-subscribe",
+              error: setupCase.lifecycleFailure,
+            },
+          ]);
+        }
+        const harness = createOperationHarness(fake);
+        const preparation = harness.operation.begin();
+        let settled = false;
+        void preparation.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          if (fake.resources().disconnectCount === 1) break;
+          await Promise.resolve();
+        }
+
+        expect(fake.resources().disconnectCount, setupCase.name).toBe(1);
+        expect(settled, setupCase.name).toBe(false);
+        expect(() => acquireRuntimeLease(), setupCase.name).toThrow(
+          RuntimeLeaseBusyError,
+        );
+        expect(finalizeSpy, setupCase.name).toHaveBeenCalledTimes(index + 1);
+        expect(compatibilityDisconnectSpy, setupCase.name).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(
+          PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+        );
+        await expect(preparation, setupCase.name).rejects.toMatchObject({
+          code: setupCase.expectedCode,
+          phase: "connecting",
+        });
+        expect(harness.operation.phase, setupCase.name).toBe("failed");
+        expect(fake.resources(), setupCase.name).toMatchObject({
+          disconnectCount: 1,
+          actionCount: 0,
+          activeSubscriptions: 0,
+          scheduledTimers: 0,
+        });
+        const nextLease = acquireRuntimeLease();
+        nextLease.release();
+      }
+    } finally {
+      finalizeSpy.mockRestore();
+      compatibilityDisconnectSpy.mockRestore();
+    }
+  });
+
+  it("recovers transferred ownership when cancellation precedes a setup rejection", async () => {
+    const unsupportedSession: DmkSession = Object.freeze({
+      internalSessionId: "late-unsupported-session",
+      modelId: "nanoX",
+    });
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({
+        type: "resolve",
+        value: unsupportedSession,
+        afterMs: 20,
+      })
+      .queueDisconnect({ type: "never" });
+    const finalizeSpy = vi.spyOn(OwnedDmkSession.prototype, "finalize");
+    const compatibilityDisconnectSpy = vi.spyOn(
+      OwnedDmkSession.prototype,
+      "disconnect",
+    );
+    const harness = createOperationHarness(fake);
+    const preparation = harness.operation.begin();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (fake.resources().connectCount === 1) break;
+      await Promise.resolve();
+    }
+    expect(harness.operation.phase).toBe("connecting");
+
+    const cancellation = harness.operation.cancel();
+    let cancellationSettled = false;
+    void cancellation.then(() => {
+      cancellationSettled = true;
+    });
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(fake.resources().disconnectCount).toBe(1);
+    expect(cancellationSettled).toBe(false);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+    expect(finalizeSpy).toHaveBeenCalledOnce();
+    expect(compatibilityDisconnectSpy).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+    );
+    await expect(cancellation).resolves.toBeUndefined();
+    await expect(preparation).rejects.toMatchObject({
+      code: "cancelled",
+      phase: "connecting",
+    });
+    expect(harness.operation.phase).toBe("cancelled");
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      actionCount: 0,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+    finalizeSpy.mockRestore();
+    compatibilityDisconnectSpy.mockRestore();
+  });
+
+  it("uses captured HID evidence when lifecycle attachment fails after connect", async () => {
+    const identity = Object.freeze({}) as HidDeviceIdentity;
+    const closed = hidSnapshot(identity, false);
+    const opened = hidSnapshot(identity, true);
+    const hidPort = new SequencedHidPort([
+      Object.freeze([closed]),
+      Object.freeze([opened]),
+      Object.freeze([opened]),
+      Object.freeze([opened]),
+      Object.freeze([closed]),
+    ]);
+    const fake = new ScriptedDmk(systemClock)
+      .queueDiscovery([{ type: "next", value: device }])
+      .queueConnect({ type: "resolve", value: session })
+      .queueSessionLifecycle([
+        {
+          type: "throw-on-subscribe",
+          error: new Error("private-lifecycle-setup-canary"),
+        },
+      ]);
+    const finalizeSpy = vi.spyOn(OwnedDmkSession.prototype, "finalize");
+    const compatibilityDisconnectSpy = vi.spyOn(
+      OwnedDmkSession.prototype,
+      "disconnect",
+    );
+    const harness = createOperationHarness(fake, {
+      createHidPort: () => hidPort,
+    });
+    const preparation = harness.operation.begin();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (hidPort.readCount >= 4) break;
+      await Promise.resolve();
+    }
+
+    expect(hidPort.readCount).toBe(4);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_HID_RELEASE_POLICY.pollIntervalMs,
+    );
+    await expect(preparation).rejects.toMatchObject({
+      code: "internal",
+      phase: "connecting",
+    });
+    expect(finalizeSpy).toHaveBeenCalledOnce();
+    expect(compatibilityDisconnectSpy).not.toHaveBeenCalled();
+    expect(hidPort.readCount).toBe(5);
+    expect(hidPort.activeListeners).toBe(0);
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      actionCount: 0,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+    finalizeSpy.mockRestore();
+    compatibilityDisconnectSpy.mockRestore();
+  });
+
+  it("keeps the lease through release timeout and preserves proven result truth", async () => {
+    const identity = Object.freeze({}) as HidDeviceIdentity;
+    const closed = hidSnapshot(identity, false);
+    const opened = hidSnapshot(identity, true);
+    const hidPort = new SequencedHidPort([
+      Object.freeze([closed]),
+      Object.freeze([opened]),
+      Object.freeze([opened]),
+    ]);
+    const fake = queuePreparation(
+      new ScriptedDmk(systemClock),
+      true,
+    ).queueAction("open-bitcoin", [
+      {
+        type: "next",
+        value: {
+          status: "completed",
+          output: { appOpened: true },
+        },
+      },
+    ]);
+    const harness = createOperationHarness(fake, {
+      createHidPort: () => hidPort,
+    });
+    const plan = await harness.operation.begin();
+    const installation = harness.operation.install(plan);
+    let settled = false;
+    void installation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (harness.operation.phase === "releasing-device") break;
+      await Promise.resolve();
+    }
+
+    expect(harness.operation.phase).toBe("releasing-device");
+    expect(settled).toBe(false);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_HID_RELEASE_POLICY.releaseDeadlineMs - 1,
+    );
+    expect(settled).toBe(false);
+    expect(() => acquireRuntimeLease()).toThrow(RuntimeLeaseBusyError);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(installation).resolves.toEqual({
+      status: "already-installed",
+      appOpen: true,
+      handoff: "reconnect-required",
+    });
+    expect(harness.operation.phase).toBe("ready-for-webusb");
+    expect(hidPort.activeListeners).toBe(0);
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      activeSubscriptions: 0,
+      scheduledTimers: 0,
+    });
+    const nextLease = acquireRuntimeLease();
+    nextLease.release();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("consumes an installation-required plan before one install, fresh verification, open, and release", async () => {
@@ -1236,10 +1873,14 @@ describe("mutation operation orchestration", () => {
   it("clears a plan timer whose valid opaque handle is zero", async () => {
     const zeroTimer = 0 as unknown as ClockTimer;
     const clearTimeout = vi.fn<(timer: ClockTimer) => void>();
+    const scheduledDurations: number[] = [];
     const zeroClock: Clock = {
       now: () => 1_000,
       monotonicNow: () => 1_000,
-      setTimeout: () => zeroTimer,
+      setTimeout: (_callback, delayMs) => {
+        scheduledDurations.push(delayMs);
+        return zeroTimer;
+      },
       clearTimeout,
     };
     const fake = queuePreparation(new ScriptedDmk(zeroClock), true).queueAction(
@@ -1254,23 +1895,32 @@ describe("mutation operation orchestration", () => {
         },
       ],
     );
-    const harness = createOperationHarness(fake, { clock: zeroClock });
+    const harness = createOperationHarness(fake, {
+      clock: zeroClock,
+      planTtlMs: 137,
+    });
     const plan = await harness.operation.begin();
 
     await expect(harness.operation.install(plan)).resolves.toMatchObject({
       status: "already-installed",
     });
-    expect(clearTimeout).toHaveBeenCalledTimes(1);
+    expect(clearTimeout).toHaveBeenCalledTimes(2);
     expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
+    expect(scheduledDurations).toEqual([
+      137,
+      PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+    ]);
   });
 
   it("clears a synchronously expired late timer and never publishes a plan", async () => {
     const zeroTimer = 0 as unknown as ClockTimer;
     const clearTimeout = vi.fn<(timer: ClockTimer) => void>();
+    const scheduledDurations: number[] = [];
     const synchronousExpiryClock: Clock = {
       now: () => 1_000,
       monotonicNow: () => 1_000,
-      setTimeout: (callback) => {
+      setTimeout: (callback, delayMs) => {
+        scheduledDurations.push(delayMs);
         callback();
         return zeroTimer;
       },
@@ -1282,6 +1932,7 @@ describe("mutation operation orchestration", () => {
     );
     const harness = createOperationHarness(fake, {
       clock: synchronousExpiryClock,
+      planTtlMs: 137,
     });
 
     await expect(harness.operation.begin()).rejects.toMatchObject({
@@ -1293,8 +1944,12 @@ describe("mutation operation orchestration", () => {
     );
     expect(harness.operation.phase).toBe("failed");
     expect(actionKinds(fake)).toEqual(["genuine", "list-bitcoin"]);
-    expect(clearTimeout).toHaveBeenCalledTimes(1);
+    expect(clearTimeout).toHaveBeenCalledTimes(2);
     expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
+    expect(scheduledDurations).toEqual([
+      137,
+      PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+    ]);
     expect(fake.resources().disconnectCount).toBe(1);
   });
 
@@ -1306,18 +1961,23 @@ describe("mutation operation orchestration", () => {
     async (method, terminal) => {
       const zeroTimer = 0 as unknown as ClockTimer;
       const clearTimeout = vi.fn<(timer: ClockTimer) => void>();
+      const scheduledDurations: number[] = [];
       const operationRef: { current?: ReadOnlyPrepareOperation } = {};
       const reentrantClock: Clock = {
         now: () => 1_000,
         monotonicNow: () => 1_000,
-        setTimeout: () => {
+        setTimeout: (_callback, delayMs) => {
+          scheduledDurations.push(delayMs);
           void operationRef.current?.[method]();
           return zeroTimer;
         },
         clearTimeout,
       };
       const fake = queuePreparation(new ScriptedDmk(reentrantClock), false);
-      const harness = createOperationHarness(fake, { clock: reentrantClock });
+      const harness = createOperationHarness(fake, {
+        clock: reentrantClock,
+        planTtlMs: 137,
+      });
       const operation = harness.operation;
       operationRef.current = operation;
 
@@ -1330,8 +1990,12 @@ describe("mutation operation orchestration", () => {
       );
       expect(operation.phase).toBe(terminal);
       expect(actionKinds(fake)).toEqual(["genuine", "list-bitcoin"]);
-      expect(clearTimeout).toHaveBeenCalledTimes(1);
+      expect(clearTimeout).toHaveBeenCalledTimes(2);
       expect(clearTimeout).toHaveBeenCalledWith(zeroTimer);
+      expect(scheduledDurations).toEqual([
+        137,
+        PROVISIONAL_HID_RELEASE_POLICY.disconnectTimeoutMs,
+      ]);
       expect(fake.resources().disconnectCount).toBe(1);
     },
   );

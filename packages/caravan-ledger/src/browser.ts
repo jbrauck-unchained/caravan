@@ -1,6 +1,7 @@
 import { getBitcoinInstallerSupport } from "./capabilities";
 import { createBitcoinAppInstallerCore } from "./installer";
 import { createProductionDmkPort } from "./internal/dmkAdapter";
+import { createBrowserHidPort } from "./internal/hidPort";
 import type { BitcoinAppInstaller } from "./types";
 
 export { getBitcoinInstallerSupport } from "./capabilities";
@@ -24,6 +25,7 @@ export type {
 /** Construct a lazy browser facade without touching DMK or browser APIs. */
 export function createBitcoinAppInstaller(): BitcoinAppInstaller {
   return createBitcoinAppInstallerCore({
+    createHidPort: createBrowserHidPort,
     createPort: createProductionDmkPort,
     getSupport: getBitcoinInstallerSupport,
   });

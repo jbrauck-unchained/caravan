@@ -6,6 +6,7 @@ import { BitcoinInstallerError } from "./errors";
 import type { BitcoinInstallerEvent, BitcoinInstallerPhase } from "./events";
 import { systemClock, type Clock } from "./internal/clock";
 import type { DmkPort } from "./internal/dmkPort";
+import type { HidPort } from "./internal/hidPort";
 import {
   ReadOnlyPrepareOperation,
   type ReadOnlyOperationDependencies,
@@ -33,10 +34,15 @@ let lastInstanceGeneration = 0;
 export interface InstallerCoreDependencies {
   readonly acquireLease?: () => RuntimeLease;
   readonly clock?: Clock;
+  readonly createHidPort?: () => HidPort;
   readonly createPort: () => DmkPort;
   readonly getSupport?: () => BitcoinInstallerSupport;
   readonly modelPolicy?: SupportedModelPolicy;
   readonly planTtlMs?: number;
+}
+
+function unavailableHidPortFactory(): HidPort {
+  throw new Error("The browser HID observation boundary is unavailable.");
 }
 
 function nextInstanceGeneration(): number {
@@ -87,6 +93,8 @@ class BitcoinAppInstallerFacade implements BitcoinAppInstaller {
     this.#operationDependencies = {
       acquireLease: dependencies.acquireLease ?? acquireRuntimeLease,
       clock,
+      createHidPort:
+        dependencies.createHidPort ?? unavailableHidPortFactory,
       createPort: dependencies.createPort,
       getSupport: dependencies.getSupport ?? getBitcoinInstallerSupport,
       instanceGeneration: nextInstanceGeneration(),
