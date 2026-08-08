@@ -1,0 +1,13 @@
+{
+  "name": "caravan-ledger-webpack5-ts46-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@caravan/ledger": "0.0.0"
+  },
+  "devDependencies": {
+    "typescript": "4.6.4",
+    "webpack": "5.64.4"
+  }
+}

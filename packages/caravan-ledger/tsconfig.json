@@ -1,0 +1,28 @@
+{
+  "extends": "@caravan/typescript-config/base.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "declaration": true,
+    "declarationMap": false,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "rootDir": "./src",
+    "target": "ES2022",
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
+  },
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
+}

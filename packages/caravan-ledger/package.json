@@ -1,0 +1,57 @@
+{
+  "name": "@caravan/ledger",
+  "version": "0.0.0",
+  "description": "A narrowly scoped browser primitive for preparing Ledger devices for Caravan",
+  "type": "module",
+  "private": true,
+  "types": "./dist/index.d.ts",
+  "module": "./dist/index.js",
+  "browser": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run test:package",
+    "dev": "npm run build -- --watch",
+    "lint": "eslint src",
+    "test": "vitest run src",
+    "test:artifact": "npm run build && node test/artifact-contract.mjs",
+    "test:consumer": "npm run build && node test/consumer/run-webpack5-ts46.mjs",
+    "test:import": "npm run build && node test/import-built.mjs",
+    "test:package": "npm run build && node test/import-built.mjs && node test/artifact-contract.mjs && node test/consumer/run-webpack5-ts46.mjs",
+    "test:watch": "vitest src --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "bitcoin",
+    "ledger",
+    "webhid"
+  ],
+  "author": "Caravan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caravan-bitcoin/caravan",
+    "directory": "packages/caravan-ledger"
+  },
+  "dependencies": {
+    "@ledgerhq/device-management-kit": "1.7.1",
+    "@ledgerhq/device-transport-kit-web-hid": "1.2.4",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@caravan/eslint-config": "*",
+    "@caravan/typescript-config": "*",
+    "typescript": "^5.3.3"
+  }
+}
