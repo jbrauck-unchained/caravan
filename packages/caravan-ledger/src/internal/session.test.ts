@@ -469,6 +469,59 @@ describe("owned DMK session", () => {
     expect(fake.resources().cancelCount).toBe(1);
   });
 
+  it("notifies invalidation observers once and immediately catches up late observers", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([
+        {
+          type: "error",
+          error: new Error("symbolic lifecycle failure"),
+          atMs: 5,
+        },
+      ]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      modelPolicy: candidatePolicy,
+    });
+    const throwingObserver = vi.fn(() => {
+      throw new Error("observer failure");
+    });
+    const observer = vi.fn();
+    owned.onInvalidated(throwingObserver);
+    owned.onInvalidated(observer);
+
+    await vi.advanceTimersByTimeAsync(5);
+    const lateObserver = vi.fn();
+    owned.onInvalidated(lateObserver);
+    await owned.disconnect();
+
+    expect(throwingObserver).toHaveBeenCalledTimes(1);
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(lateObserver).toHaveBeenCalledTimes(1);
+  });
+
+  it("latches disconnect before an invalidation observer can reenter it", async () => {
+    const fake = new ScriptedDmk(systemClock)
+      .queueConnect({ type: "resolve", value: allowedSession })
+      .queueSessionLifecycle([{ type: "never" }]);
+    const owned = await openOwnedDmkSession(fake, device, {
+      modelPolicy: candidatePolicy,
+    });
+    let nestedDisconnect: Promise<void> | undefined;
+    owned.onInvalidated(() => {
+      nestedDisconnect = owned.disconnect();
+    });
+
+    const firstDisconnect = owned.disconnect();
+    expect(nestedDisconnect).toBe(firstDisconnect);
+    expect(owned.disconnect()).toBe(firstDisconnect);
+    await firstDisconnect;
+    expect(fake.resources()).toMatchObject({
+      disconnectCount: 1,
+      unsubscribeCount: 1,
+      activeSubscriptions: 0,
+    });
+  });
+
   it("disconnect cancels each protected run once and leaves no subscription orphan", async () => {
     const fake = new ScriptedDmk(systemClock)
       .queueConnect({ type: "resolve", value: allowedSession })

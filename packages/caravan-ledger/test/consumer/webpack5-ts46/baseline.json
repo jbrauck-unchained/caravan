@@ -1,8 +1,8 @@
 {
-  "capturedFor": "Phase 2 support and safe-error public surface",
-  "gzipBytes": 1031,
-  "moduleCount": 5,
+  "capturedFor": "Phase 3 read-only browser installer surface",
+  "gzipBytes": 88075,
+  "moduleCount": 362,
   "typescriptVersion": "4.6.4",
-  "uncompressedBytes": 2337,
+  "uncompressedBytes": 334327,
   "webpackVersion": "5.64.4"
 }

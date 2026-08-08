@@ -144,6 +144,10 @@ export class OwnedDmkSession {
 
   readonly #activeActions = new Set<ActiveSessionAction>();
 
+  readonly #invalidationListeners = new Set<() => void>();
+
+  #invalidationNotified = false;
+
   constructor(port: DmkPort, session: DmkSession, lease: RuntimeLease) {
     this.#port = port;
     this.#session = session;
@@ -156,6 +160,29 @@ export class OwnedDmkSession {
 
   isCurrent(): boolean {
     return this.#lease.isCurrent();
+  }
+
+  /** Observe only the loss of this private generation, without native data. */
+  onInvalidated(listener: () => void): () => void {
+    if (typeof listener !== "function") {
+      throw new TypeError("The session invalidation listener must be callable.");
+    }
+    if (this.#invalidationNotified || !this.#lease.isCurrent()) {
+      try {
+        listener();
+      } catch {
+        // Internal observers cannot alter session invalidation.
+      }
+      return () => undefined;
+    }
+
+    this.#invalidationListeners.add(listener);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      this.#invalidationListeners.delete(listener);
+    };
   }
 
   /** Begin the only action that may run before genuine proof exists. */
@@ -222,6 +249,7 @@ export class OwnedDmkSession {
       this.#revokeGenuineProof();
       this.#lease.invalidate();
       this.#cancelActiveActions();
+      this.#notifyInvalidated();
       this.#unsubscribeLifecycle();
     };
 
@@ -236,6 +264,7 @@ export class OwnedDmkSession {
       this.#revokeGenuineProof();
       this.#lease.invalidate();
       this.#cancelActiveActions();
+      this.#notifyInvalidated();
       throw error;
     }
     this.#lifecycleSubscription = subscription;
@@ -245,24 +274,36 @@ export class OwnedDmkSession {
   disconnect(): Promise<void> {
     if (this.#disconnectPromise) return this.#disconnectPromise;
 
-    this.#disconnectPromise = (async () => {
-      this.#revokeGenuineProof();
-      this.#lease.invalidate();
-      this.#cancelActiveActions();
-      this.#unsubscribeLifecycle();
-      try {
-        await this.#port.disconnect(this.#session);
-      } finally {
-        this.#lease.release();
-      }
-    })();
-    return this.#disconnectPromise;
+    let resolveDisconnect!: () => void;
+    let rejectDisconnect!: (error: unknown) => void;
+    const disconnectPromise = new Promise<void>((resolve, reject) => {
+      resolveDisconnect = resolve;
+      rejectDisconnect = reject;
+    });
+    // Latch before invalidation observers can reenter disconnect().
+    this.#disconnectPromise = disconnectPromise;
+    void this.#completeDisconnect().then(resolveDisconnect, rejectDisconnect);
+    return disconnectPromise;
+  }
+
+  async #completeDisconnect(): Promise<void> {
+    this.#revokeGenuineProof();
+    this.#lease.invalidate();
+    this.#cancelActiveActions();
+    this.#notifyInvalidated();
+    this.#unsubscribeLifecycle();
+    try {
+      await this.#port.disconnect(this.#session);
+    } finally {
+      this.#lease.release();
+    }
   }
 
   #assertCurrent(): void {
     if (this.#lease.isCurrent()) return;
     this.#revokeGenuineProof();
     this.#cancelActiveActions();
+    this.#notifyInvalidated();
     throw new InactiveLedgerSessionError();
   }
 
@@ -280,6 +321,7 @@ export class OwnedDmkSession {
     const operation = this.#port.runAction(this.#session, action);
     if (!this.#lease.isCurrent() || this.#lease.generation !== generation) {
       cancelOperationSafely(operation);
+      this.#notifyInvalidated();
       throw new InactiveLedgerSessionError();
     }
     if (this.#genuineGeneration !== generation) {
@@ -297,6 +339,7 @@ export class OwnedDmkSession {
     const operation = this.#port.runAction(this.#session, action);
     if (!this.#lease.isCurrent() || this.#lease.generation !== generation) {
       cancelOperationSafely(operation);
+      this.#notifyInvalidated();
       throw new InactiveLedgerSessionError();
     }
     return this.#startTrackedAction(operation, options);
@@ -369,6 +412,20 @@ export class OwnedDmkSession {
         action.cancel();
       } catch {
         // Action invalidation remains best effort and never exposes native data.
+      }
+    }
+  }
+
+  #notifyInvalidated(): void {
+    if (this.#invalidationNotified) return;
+    this.#invalidationNotified = true;
+    const listeners = [...this.#invalidationListeners];
+    this.#invalidationListeners.clear();
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+        // Internal observers cannot alter session invalidation.
       }
     }
   }

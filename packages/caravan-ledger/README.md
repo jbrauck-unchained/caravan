@@ -4,8 +4,11 @@
 scoped Ledger Bitcoin app preparation flow. It is separate from
 `@caravan/wallets`, which continues to own WebUSB signing.
 
-This workspace is an implementation foundation only. It is private, versioned
-`0.0.0`, and cannot be published. No usable device-management API exists yet.
+This workspace is a private, versioned `0.0.0` implementation foundation and
+cannot be published. Its parameterless public factory now exposes the complete
+Phase 3 read-only preparation flow against deterministic fakes. Production
+hardware remains fail closed because the reviewed production model allowlist is
+intentionally empty.
 
 ## Runtime and packaging
 
@@ -13,6 +16,46 @@ This workspace is an implementation foundation only. It is private, versioned
 - ECMAScript modules only; no CommonJS entry point
 - No browser globals or permission APIs touched while importing the package
 - No React, Redux, Node.js polyfills, or signing dependency
+
+The package has two ESM artifacts behind one root export. Browser-aware
+bundlers select `dist/browser.js`, which statically imports the pinned Ledger
+adapter but does not construct it until `prepare()`. Native Node and SSR select
+the SDK-free `dist/index.js`; its factory returns the same facade but always
+reports an unsupported environment. `module` and `browser` point to the browser
+artifact for older bundlers, while the ordered `node` export condition keeps
+native Node on the neutral artifact.
+
+## Read-only API
+
+```ts
+import { createBitcoinAppInstaller } from "@caravan/ledger";
+
+const installer = createBitcoinAppInstaller();
+const unsubscribe = installer.subscribe((event) => {
+  renderLedgerProgress(event);
+});
+
+try {
+  const plan = await installer.prepare();
+  renderConfirmation(plan.status);
+} finally {
+  unsubscribe();
+  await installer.dispose();
+}
+```
+
+`prepare()` performs only support checking, device selection, connection,
+genuine checking, and exact Bitcoin-presence inspection. It never installs,
+updates, uninstalls, or opens an app. A successful result is a frozen,
+in-memory, instance/session-bound plan with a five-minute lifetime. Serialized,
+forged, foreign, expired, cancelled, disconnected, and disposed plans carry no
+authority. Phase 3 deliberately rejects `install()` and `recover()` before any
+mutating action exists.
+
+The initial `prepare()` call must remain directly inside the user activation
+that is allowed to open the WebHID chooser. Support checking, realm-wide lease
+reservation, the selecting transition, discovery start, and discovery
+subscription all occur synchronously in that call.
 
 ## Reviewed runtime dependencies
 
@@ -22,14 +65,23 @@ The private foundation pins and externalizes these runtime dependencies:
 - `@ledgerhq/device-transport-kit-web-hid@1.2.4`
 - `rxjs@7.8.2`
 
-The supported package-root exports are evaluated as bundler-transformed source
-through Vitest's Vite transform without constructing DMK, a transport, an
-action, or an observable. This is neither a native-Node dependency import proof
-nor the consumer browser-bundle proof. The public package root stays lazy and
-Node/SSR-safe. The pinned Ledger packages' published ESM entries currently
-contain directory re-exports that Node does not resolve directly;
-browser-bundler compatibility and the eventual production adapter boundary
-require explicit proof before a canary.
+The browser root is evaluated through Vitest and through a clean packed Webpack
+5.64.4 consumer without constructing DMK, requesting permission, enumerating
+devices, opening a network connection, or logging. A separate native-Node gate
+proves the package export resolves to the neutral artifact. The pinned Ledger
+packages' published ESM entries currently contain directory re-exports that
+Node does not resolve directly, which is why native Node must not select the
+browser artifact.
+
+## Cleanup limitation
+
+The pinned DMK boundary exposes `connect()` and `disconnect()` only as promises;
+it provides no abort signal or bounded settlement guarantee. If either promise
+never settles, cancellation/disposal must retain the realm-wide lease and await
+it so that a late connection cannot create an unowned device session. Releasing
+the lease early or resolving `dispose()` would falsely claim cleanup. The race
+suite pins this fail-closed limitation until a reviewed bounded cleanup policy
+or an abortable pinned-SDK primitive exists.
 
 ## Authority boundary
 
@@ -61,12 +113,10 @@ cannot pass. The consumer install uses a fresh disposable npm cache and may
 require npm registry access to fetch the exact pinned compatibility tooling;
 it never writes install state into the workspace or the packed package.
 
-The Phase 2 bundle baseline is 2,337 uncompressed bytes and 1,031 gzip bytes
-across five reported modules. Ledger SDK, RxJS, and `reflect-metadata` module
-counts are all zero because this phase intentionally exports no production SDK
-adapter. The clean install still verifies one RxJS 7.8.2 and one
-`reflect-metadata` 0.2.2 in the external dependency graph. Sizes are recorded
-as evidence, not enforced as a byte budget.
+The Phase 3 packed-consumer baseline records the browser entry plus the expected
+Ledger SDK, RxJS, and `reflect-metadata` graph. The clean install verifies one
+RxJS 7.8.2 and one `reflect-metadata` 0.2.2 physical copy. Sizes and module
+counts are recorded as evidence, not enforced as a byte budget.
 
 Live Ledger backend or physical-device tests are prohibited until the
 [authorization gate](../../documentation/ledger/authorization-gate.md) records

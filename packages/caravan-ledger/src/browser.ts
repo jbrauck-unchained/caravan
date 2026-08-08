@@ -1,13 +1,10 @@
-import { createNeutralBitcoinAppInstaller } from "./installer";
+import { getBitcoinInstallerSupport } from "./capabilities";
+import { createBitcoinAppInstallerCore } from "./installer";
+import { createProductionDmkPort } from "./internal/dmkAdapter";
 import type { BitcoinAppInstaller } from "./types";
 
 export { getBitcoinInstallerSupport } from "./capabilities";
 export type { BitcoinInstallerSupport } from "./capabilities";
-
-/** Construct the SDK-free Node/SSR facade exposed by this export condition. */
-export function createBitcoinAppInstaller(): BitcoinAppInstaller {
-  return createNeutralBitcoinAppInstaller();
-}
 
 export { BitcoinInstallerError } from "./errors";
 export type { BitcoinInstallerErrorCode } from "./errors";
@@ -23,3 +20,11 @@ export type {
   BitcoinInstallPlan,
   BitcoinInstallResult,
 } from "./types";
+
+/** Construct a lazy browser facade without touching DMK or browser APIs. */
+export function createBitcoinAppInstaller(): BitcoinAppInstaller {
+  return createBitcoinAppInstallerCore({
+    createPort: createProductionDmkPort,
+    getSupport: getBitcoinInstallerSupport,
+  });
+}

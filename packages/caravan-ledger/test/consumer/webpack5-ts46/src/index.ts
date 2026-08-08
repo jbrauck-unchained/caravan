@@ -1,5 +1,6 @@
 import {
   BitcoinInstallerError,
+  createBitcoinAppInstaller,
   getBitcoinInstallerSupport,
 } from "@caravan/ledger";
 import type {
@@ -15,6 +16,13 @@ import type {
 
 export const supportAtImport: BitcoinInstallerSupport =
   getBitcoinInstallerSupport();
+
+export const installerAtImport: BitcoinAppInstaller =
+  createBitcoinAppInstaller();
+
+export function makeInstaller(): BitcoinAppInstaller {
+  return createBitcoinAppInstaller();
+}
 
 export function readSupport(): BitcoinInstallerSupport {
   return getBitcoinInstallerSupport();

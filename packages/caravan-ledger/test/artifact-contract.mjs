@@ -11,6 +11,7 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPath = join(packageRoot, "package.json");
 const declarationPath = join(packageRoot, "dist", "index.d.ts");
 const runtimePath = join(packageRoot, "dist", "index.js");
+const browserRuntimePath = join(packageRoot, "dist", "browser.js");
 
 const APPROVED_DECLARATION_EXPORTS = [
   "BitcoinAppInstaller",
@@ -22,17 +23,20 @@ const APPROVED_DECLARATION_EXPORTS = [
   "BitcoinInstallerInteraction",
   "BitcoinInstallerPhase",
   "BitcoinInstallerSupport",
+  "createBitcoinAppInstaller",
   "getBitcoinInstallerSupport",
 ].sort();
 
 const APPROVED_RUNTIME_EXPORTS = [
   "BitcoinInstallerError",
+  "createBitcoinAppInstaller",
   "getBitcoinInstallerSupport",
 ].sort();
 
 const APPROVED_PACKED_FILES = [
   "LICENSE",
   "README.md",
+  "dist/browser.js",
   "dist/index.d.ts",
   "dist/index.js",
   "package.json",
@@ -127,8 +131,8 @@ assert(
   manifest.types === "./dist/index.d.ts",
   "Unexpected top-level declaration entry.",
 );
-assert(manifest.module === "./dist/index.js", "Unexpected module entry.");
-assert(manifest.browser === "./dist/index.js", "Unexpected browser entry.");
+assert(manifest.module === "./dist/browser.js", "Unexpected module entry.");
+assert(manifest.browser === "./dist/browser.js", "Unexpected browser entry.");
 assert(
   !Object.hasOwn(manifest, "sideEffects"),
   "sideEffects must remain unset until the SDK artifact review allows it.",
@@ -147,10 +151,10 @@ assert(
   "Root export map is missing.",
 );
 assertExact(Object.keys(manifest.exports), ["."], "Package export subpaths");
-assertExact(
-  Object.keys(rootExport),
-  ["browser", "import", "types"],
-  "Root export conditions",
+assert(
+  JSON.stringify(Object.keys(rootExport)) ===
+    JSON.stringify(["types", "browser", "node", "import", "default"]),
+  "Root export conditions or their precedence changed.",
 );
 assert(
   !Object.hasOwn(rootExport, "require"),
@@ -160,8 +164,10 @@ assert(
   rootExport.types === "./dist/index.d.ts",
   "Unexpected declaration entry.",
 );
-assert(rootExport.import === "./dist/index.js", "Unexpected ESM entry.");
-assert(rootExport.browser === "./dist/index.js", "Unexpected browser entry.");
+assert(rootExport.browser === "./dist/browser.js", "Unexpected browser entry.");
+assert(rootExport.node === "./dist/index.js", "Unexpected Node entry.");
+assert(rootExport.import === "./dist/browser.js", "Unexpected ESM entry.");
+assert(rootExport.default === "./dist/browser.js", "Unexpected default entry.");
 assertExact(
   manifest.files,
   ["dist", "README.md", "LICENSE"],
@@ -199,6 +205,7 @@ assertExact(
 
 const declarationText = readFileSync(declarationPath, "utf8");
 const runtimeText = readFileSync(runtimePath, "utf8");
+const browserRuntimeText = readFileSync(browserRuntimePath, "utf8");
 assertExact(
   declarationExports(declarationPath),
   APPROVED_DECLARATION_EXPORTS,
@@ -223,6 +230,19 @@ for (const pattern of [
     `Built runtime contains forbidden dependency surface ${pattern}.`,
   );
 }
+for (const dependency of [
+  "@ledgerhq/device-management-kit",
+  "@ledgerhq/device-transport-kit-web-hid",
+]) {
+  assert(
+    browserRuntimeText.includes(`from '${dependency}'`),
+    `Browser runtime does not statically externalize ${dependency}.`,
+  );
+}
+assert(
+  !/\bimport\s*\(/.test(browserRuntimeText),
+  "Browser runtime contains an unreviewed dynamic import.",
+);
 
 const runtimeModule = await import(
   `${pathToFileURL(runtimePath).href}?artifact-contract`
@@ -232,6 +252,8 @@ assertExact(
   APPROVED_RUNTIME_EXPORTS,
   "Public runtime exports",
 );
+const neutralInstaller = runtimeModule.createBitcoinAppInstaller();
+await neutralInstaller.dispose();
 
 const npmCache = mkdtempSync(join(tmpdir(), "caravan-ledger-artifact-npm-"));
 let packResult;
