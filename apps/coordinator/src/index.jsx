@@ -9,6 +9,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import thunk from "redux-thunk";
 
 import App from "./components/AppContainer";
+import { LEDGER_BITCOIN_POC_ENABLED } from "./config/ledgerBitcoinPoc";
 import reducers from "./reducers";
 
 /* eslint-disable-next-line no-underscore-dangle */
@@ -47,9 +48,10 @@ ReactDOM.render(
     <QueryClientProvider client={queryClient}>
       <App />
       {/* Only show devtools in development */}
-      {process.env.NODE_ENV === "development" && (
-        <ReactQueryDevtools initialIsOpen={false} />
-      )}
+      {process.env.NODE_ENV === "development" &&
+        !LEDGER_BITCOIN_POC_ENABLED && (
+          <ReactQueryDevtools initialIsOpen={false} />
+        )}
     </QueryClientProvider>
   </Provider>,
   document.getElementById("app"),

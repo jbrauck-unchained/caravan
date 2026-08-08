@@ -26,6 +26,8 @@ contract controls and the discrepancy blocks release until reviewed.
 - [Consumer integration guide](./integration-guide.md) — preload, direct-click
   preparation, explicit confirmation, result handling, separate-click WebUSB,
   cancellation, recovery, disposal, and every public phase.
+- [Coordinator proof of concept](./coordinator-poc.md) — explicit local-only
+  simulated acceptance mode for the fixed Bitcoin install experience.
 - [Support runbook](./support-runbook.md) — every public error and safe operator
   response without state guessing, blind retries, or sensitive-data requests.
 - [Physical QA runbook](./physical-qa-runbook.md) — authorization-gated browser,

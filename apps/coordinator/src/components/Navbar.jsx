@@ -19,8 +19,10 @@ import ScriptIcon from "@mui/icons-material/Code";
 import CreateIcon from "@mui/icons-material/Create";
 import TestIcon from "@mui/icons-material/CheckCircle";
 import HelpIcon from "@mui/icons-material/Help";
+import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import Logo from "../../public/images/landing/logo_mark_white.webp";
 import { useStyles } from "./Navbar.styles";
+import { LEDGER_BITCOIN_POC_ENABLED } from "../config/ledgerBitcoinPoc";
 
 const NavItem = ({ href, title, icon, classes }) => {
   return (
@@ -114,6 +116,15 @@ const Navbar = () => {
       icon: <CreateIcon />,
     },
     { href: "/test", title: "Test Suite", icon: <TestIcon /> },
+    ...(LEDGER_BITCOIN_POC_ENABLED
+      ? [
+          {
+            href: "/ledger-bitcoin",
+            title: "Ledger Bitcoin App",
+            icon: <SystemUpdateAltIcon />,
+          },
+        ]
+      : []),
     { href: "/help", title: "Help", icon: <HelpIcon /> },
   ];
 
