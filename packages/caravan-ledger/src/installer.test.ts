@@ -421,6 +421,7 @@ describe("Bitcoin app installer read-only facade", () => {
     const timer = Object.freeze({}) as ClockTimer;
     const hostileClock: Clock = {
       now: () => now,
+      monotonicNow: () => now,
       setTimeout: (callback) => {
         expiryCallback = callback;
         return timer;
