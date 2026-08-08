@@ -45,6 +45,16 @@ project.
 - Having tightly scoped libraries will make code easier and safer to audit and build out.
 - Having a unified set of developer tooling (linting rules, deployment automation, etc.) also improves developer QoL and code reliability.
 
+### Ledger Bitcoin app installer
+
+The proposed browser-only Ledger Bitcoin app installer is governed by a
+[package architecture decision](./documentation/ledger/adr/0001-ledger-bitcoin-installer-package.md),
+an [authorization gate](./documentation/ledger/authorization-gate.md), a
+[threat model](./documentation/ledger/threat-model.md), a
+[versioned public contract](./documentation/ledger/public-contract-v0.1.md),
+and a [support and acceptance policy](./documentation/ledger/support-matrix.md).
+These documents define the review boundary; they do not indicate that live
+Ledger backend access or production support has been approved.
 
 ## Developers
 The monorepo setup should make it easier for developers to test their changes
