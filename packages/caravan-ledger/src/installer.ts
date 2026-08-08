@@ -123,35 +123,29 @@ class BitcoinAppInstallerFacade implements BitcoinAppInstaller {
     if (this.#phase !== "idle" && this.#phase !== "cancelled") {
       return rejected(new BitcoinInstallerError("internal", this.#phase, false));
     }
-
-    const operation = new ReadOnlyPrepareOperation({
-      ...this.#operationDependencies,
-      onEvent: (event) => this.#emit(event),
-      onTerminal: (settledOperation, phase) => {
-        if (this.#operation === settledOperation) {
-          this.#operation = undefined;
-        }
-        if (phase === "disposed") this.#listeners.clear();
-      },
-    });
-    this.#operation = operation;
-    return operation.begin();
+    return this.#startReadOnlyOperation();
   }
 
   install(plan: BitcoinInstallPlan): Promise<BitcoinInstallResult> {
     if (this.#disposeRequested) return rejected(this.#disposedError());
-    if (!this.#operation) {
+    const operation = this.#operation;
+    if (!operation || this.#phase !== "ready-to-install") {
       return rejected(new BitcoinInstallerError("internal", this.#phase, false));
     }
-    return this.#operation.rejectInstall(plan);
+    return operation.install(plan);
   }
 
   recover(): Promise<BitcoinInstallPlan> {
     if (this.#disposeRequested) return rejected(this.#disposedError());
-    if (!this.#operation) {
+    if (this.#operation) {
+      return rejected(
+        new BitcoinInstallerError("device-busy", this.#phase, true),
+      );
+    }
+    if (this.#phase !== "needs-recovery") {
       return rejected(new BitcoinInstallerError("internal", this.#phase, false));
     }
-    return this.#operation.rejectRecover();
+    return this.#startReadOnlyOperation();
   }
 
   cancel(): void {
@@ -194,6 +188,24 @@ class BitcoinAppInstallerFacade implements BitcoinAppInstaller {
         // Consumer listener failures cannot alter management state.
       }
     }
+  }
+
+  /** Start discovery in this invocation stack for prepare and recovery clicks. */
+  #startReadOnlyOperation(): Promise<BitcoinInstallPlan> {
+    const operation = new ReadOnlyPrepareOperation({
+      ...this.#operationDependencies,
+      onEvent: (event) => this.#emit(event),
+      onTerminal: (settledOperation, phase) => {
+        if (this.#operation === settledOperation) {
+          this.#operation = undefined;
+        }
+        if (phase === "disposed") this.#listeners.clear();
+      },
+    });
+    // Latch ownership before begin() reaches the synchronous chooser/event
+    // boundary, where consumer callbacks can reenter every public method.
+    this.#operation = operation;
+    return operation.begin();
   }
 
   #disposedError(): BitcoinInstallerError {
