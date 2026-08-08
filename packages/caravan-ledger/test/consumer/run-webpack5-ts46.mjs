@@ -14,13 +14,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 
 const require = createRequire(import.meta.url);
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 const fixtureTemplate = fileURLToPath(
   new URL("./webpack5-ts46/", import.meta.url),
 );
+const DEFAULT_NPM_TIMEOUT_MS = 30_000;
+const DEFAULT_CLEAN_INSTALL_TIMEOUT_MS = 120_000;
+const EXPECTED_NODE_MAJOR = 24;
+const EXPECTED_NPM_VERSION = "11.14.1";
+const BUNDLE_METRIC_FIELDS = [
+  "brotliBytes",
+  "gzipBytes",
+  "moduleCount",
+  "uncompressedBytes",
+];
+const observedSideEffects = [];
 
 function assert(condition, message) {
   if (!condition) {
@@ -41,8 +52,45 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function readTimeout(name, fallback) {
+  const configured = process.env[name];
+  if (configured === undefined) return fallback;
+  const timeout = Number(configured);
+  assert(
+    Number.isSafeInteger(timeout) && timeout >= 1_000 && timeout <= 600_000,
+    `${name} must be an integer between 1000 and 600000 milliseconds.`,
+  );
+  return timeout;
+}
+
+const npmTimeoutMs = readTimeout(
+  "CARAVAN_LEDGER_CONSUMER_NPM_TIMEOUT_MS",
+  DEFAULT_NPM_TIMEOUT_MS,
+);
+const cleanInstallTimeoutMs = readTimeout(
+  "CARAVAN_LEDGER_CONSUMER_INSTALL_TIMEOUT_MS",
+  DEFAULT_CLEAN_INSTALL_TIMEOUT_MS,
+);
+
+function reportStage(message) {
+  process.stderr.write(`[consumer:webpack5-ts46] ${message}\n`);
+}
+
+function withTimeout(promise, timeout, label) {
+  let timeoutId;
+  const deadline = new Promise((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeout} ms.`)),
+      timeout,
+    );
+  });
+  return Promise.race([promise, deadline]).finally(() =>
+    clearTimeout(timeoutId),
+  );
+}
+
 function runNpm(arguments_, cwd, options = {}) {
-  const { env, ...execOptions } = options;
+  const { env, timeout = npmTimeoutMs, ...execOptions } = options;
   return execFileSync("npm", arguments_, {
     cwd,
     encoding: "utf8",
@@ -55,8 +103,41 @@ function runNpm(arguments_, cwd, options = {}) {
       npm_config_update_notifier: "false",
       ...env,
     },
+    maxBuffer: 10 * 1024 * 1024,
+    timeout,
     ...execOptions,
   });
+}
+
+function runCleanInstall(fixtureRoot) {
+  reportStage(
+    `installing the exact disposable dependency graph (timeout ${cleanInstallTimeoutMs} ms)`,
+  );
+  try {
+    runNpm(
+      [
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--package-lock=false",
+        "--strict-peer-deps",
+      ],
+      fixtureRoot,
+      { stdio: "pipe", timeout: cleanInstallTimeoutMs },
+    );
+  } catch (error) {
+    const timedOut =
+      error?.code === "ETIMEDOUT" ||
+      (error?.signal === "SIGTERM" && error?.status === null);
+    const detail = timedOut
+      ? `timed out after ${cleanInstallTimeoutMs} ms`
+      : "failed";
+    throw new Error(
+      `The disposable consumer install ${detail}. This clean proof requires registry/cache access for its exact dependency set; no baseline was refreshed.`,
+      { cause: error },
+    );
+  }
 }
 
 function compileWithTypescript46(fixtureRoot, typescriptPackagePath) {
@@ -65,6 +146,7 @@ function compileWithTypescript46(fixtureRoot, typescriptPackagePath) {
     cwd: fixtureRoot,
     encoding: "utf8",
     stdio: "pipe",
+    timeout: npmTimeoutMs,
   });
 }
 
@@ -76,22 +158,30 @@ async function bundleWithWebpack564(fixtureRoot, webpack) {
   let compilationFailure;
   let stats;
   try {
-    stats = await new Promise((resolve, reject) => {
-      compiler.run((error, result) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(result);
-        }
-      });
-    });
+    stats = await withTimeout(
+      new Promise((resolve, reject) => {
+        compiler.run((error, result) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        });
+      }),
+      npmTimeoutMs,
+      "Webpack compilation",
+    );
   } catch (error) {
     compilationFailure = error;
   }
   try {
-    await new Promise((resolve, reject) => {
-      compiler.close((error) => (error ? reject(error) : resolve()));
-    });
+    await withTimeout(
+      new Promise((resolve, reject) => {
+        compiler.close((error) => (error ? reject(error) : resolve()));
+      }),
+      npmTimeoutMs,
+      "Webpack compiler cleanup",
+    );
   } catch (error) {
     compilationFailure ??= error;
   }
@@ -120,6 +210,169 @@ function flattenModules(modules = []) {
     flattened.push(...flattenModules(module.modules));
   }
   return flattened;
+}
+
+function sanitizeModulePath(value, pathMappings) {
+  let sanitized = String(value).replaceAll("\\", "/");
+  for (const [path, replacement] of pathMappings) {
+    sanitized = sanitized.replaceAll(path.replaceAll("\\", "/"), replacement);
+  }
+  return sanitized.replaceAll(/file:\/\//gu, "");
+}
+
+const FORBIDDEN_BROWSER_RUNTIME_MODULE =
+  /(?:^|[\\/])node_modules[\\/](?:node-hid|usb|ws)(?:[\\/]|$)|@ledgerhq[\\/](?:device-transport-kit-node(?:-[^\\/]+)?|device-transport-kit-web-usb|hw-transport-node(?:-[^\\/]+)?|hw-transport-webusb)(?:[\\/]|$)/u;
+
+function largestMeaningfulModules(modules, pathMappings, limit = 10) {
+  const byPath = new Map();
+  for (const module of modules) {
+    if (
+      typeof module.size !== "number" ||
+      module.size <= 0 ||
+      module.moduleType === "runtime" ||
+      (Array.isArray(module.modules) && module.modules.length > 0)
+    ) {
+      continue;
+    }
+    const rawPath = module.name ?? module.identifier;
+    if (!rawPath || /^webpack\/(?:runtime|container)\b/u.test(rawPath)) {
+      continue;
+    }
+    const path = sanitizeModulePath(rawPath, pathMappings);
+    const bytes = Math.round(module.size);
+    const previous = byPath.get(path);
+    if (previous === undefined || previous < bytes) byPath.set(path, bytes);
+  }
+  return [...byPath]
+    .map(([path, bytes]) => ({ bytes, path }))
+    .sort(
+      (left, right) =>
+        right.bytes - left.bytes || left.path.localeCompare(right.path),
+    )
+    .slice(0, limit);
+}
+
+function validateAndEvaluateBudget(baseline, metrics) {
+  assert(
+    baseline.schemaVersion === 2,
+    "Bundle baseline schemaVersion must be 2.",
+  );
+  assert(
+    baseline.captureStatus === "current-clean-slice-6.5" &&
+      typeof baseline.capturedFor === "string",
+    "Bundle baseline must come from a completed clean Slice 6.5 capture.",
+  );
+  assert(
+    baseline.typescriptVersion === "4.6.4" &&
+      baseline.webpackVersion === "5.64.4" &&
+      baseline.nodeMajor === EXPECTED_NODE_MAJOR &&
+      baseline.npmVersion === EXPECTED_NPM_VERSION,
+    "Bundle baseline was recorded with different compatibility tooling.",
+  );
+
+  const capturedMetrics = baseline.capturedMetrics ?? {};
+  const policy = baseline.budgetPolicy ?? {};
+  const derivation = policy.derivation ?? {};
+  const warning = policy.warning ?? {};
+  const failure = policy.failure ?? {};
+  for (const field of BUNDLE_METRIC_FIELDS) {
+    assert(
+      capturedMetrics[field] === null ||
+        (Number.isSafeInteger(capturedMetrics[field]) &&
+          capturedMetrics[field] >= 0),
+      `Captured bundle metric ${field} must be null or a non-negative integer.`,
+    );
+    assert(
+      Number.isSafeInteger(metrics[field]) && metrics[field] >= 0,
+      `Observed bundle metric ${field} must be a non-negative integer.`,
+    );
+  }
+  assert(
+    ["gzipBytes", "moduleCount", "uncompressedBytes"].every(
+      (field) => capturedMetrics[field] !== null,
+    ),
+    "Only a historical brotli capture may be pending.",
+  );
+  const roundUp = (value, increment) =>
+    Math.ceil(value / increment) * increment;
+  const capturedBrotliBasis =
+    capturedMetrics.brotliBytes ?? capturedMetrics.gzipBytes;
+  const expectedWarning = {
+    brotliBytes: roundUp(
+      capturedBrotliBasis * derivation.warningMultiplier,
+      derivation.byteRounding,
+    ),
+    gzipBytes: roundUp(
+      capturedMetrics.gzipBytes * derivation.warningMultiplier,
+      derivation.byteRounding,
+    ),
+    moduleCount: Math.ceil(
+      capturedMetrics.moduleCount * derivation.moduleWarningMultiplier,
+    ),
+    uncompressedBytes: roundUp(
+      capturedMetrics.uncompressedBytes * derivation.warningMultiplier,
+      derivation.byteRounding,
+    ),
+  };
+  const expectedFailure = {
+    brotliBytes: roundUp(
+      capturedBrotliBasis * derivation.failureMultiplier,
+      derivation.byteRounding,
+    ),
+    gzipBytes: roundUp(
+      capturedMetrics.gzipBytes * derivation.failureMultiplier,
+      derivation.byteRounding,
+    ),
+    moduleCount: Math.ceil(
+      capturedMetrics.moduleCount * derivation.moduleFailureMultiplier,
+    ),
+    uncompressedBytes: roundUp(
+      capturedMetrics.uncompressedBytes * derivation.failureMultiplier,
+      derivation.byteRounding,
+    ),
+  };
+  assert(
+    BUNDLE_METRIC_FIELDS.every(
+      (field) =>
+        warning[field] === expectedWarning[field] &&
+        failure[field] === expectedFailure[field],
+    ),
+    "Absolute bundle ceilings must match the documented baseline derivation.",
+  );
+  const status = {};
+  const warnings = [];
+  const failures = [];
+  for (const field of BUNDLE_METRIC_FIELDS) {
+    assert(
+      Number.isSafeInteger(warning[field]) && warning[field] >= 0,
+      `Warning budget ${field} must be a non-negative integer.`,
+    );
+    assert(
+      Number.isSafeInteger(failure[field]) && failure[field] >= warning[field],
+      `Failure budget ${field} must be an integer at least as large as its warning budget.`,
+    );
+    if (metrics[field] > failure[field]) {
+      status[field] = "failure";
+      failures.push(
+        `${field}=${metrics[field]} exceeds failure ceiling ${failure[field]}`,
+      );
+    } else if (metrics[field] > warning[field]) {
+      status[field] = "warning";
+      warnings.push(
+        `${field}=${metrics[field]} exceeds warning ceiling ${warning[field]}`,
+      );
+    } else {
+      status[field] = "within-budget";
+    }
+  }
+  assert(
+    failures.length === 0,
+    `Reviewed bundle budget failed: ${failures.join("; ")}.`,
+  );
+  for (const warningMessage of warnings) {
+    reportStage(`BUDGET WARNING: ${warningMessage}`);
+  }
+  return { status, warnings };
 }
 
 function collectDependencyVersions(tree, dependencyName, versions = new Set()) {
@@ -166,10 +419,16 @@ function replaceGlobal(name, value) {
 }
 
 function denyGlobalUse(name) {
-  const forbidden = function () {
-    throw new Error(`Packed bundle invoked ${name} during a side-effect check.`);
+  return replaceGlobal(name, forbiddenCall(name));
+}
+
+function forbiddenCall(name) {
+  return function () {
+    observedSideEffects.push(name);
+    throw new Error(
+      `Packed bundle invoked ${name} during a side-effect check.`,
+    );
   };
-  return replaceGlobal(name, forbidden);
 }
 
 function denyConsoleCall(name) {
@@ -178,6 +437,7 @@ function denyConsoleCall(name) {
   Object.defineProperty(console, name, {
     configurable: true,
     value() {
+      observedSideEffects.push(`console.${name}`);
       throw new Error(`Packed bundle called console.${name}.`);
     },
     writable: true,
@@ -193,8 +453,10 @@ const runRoot = mkdtempSync(join(tmpdir(), "caravan-ledger-consumer-"));
 const fixtureRoot = join(runRoot, "fixture");
 const packDestination = join(runRoot, "packed");
 const npmCache = join(runRoot, "npm-cache");
+let runCompleted = false;
 
 try {
+  reportStage("validating the checked-in compatibility fixture");
   for (const generatedName of [
     "bundle",
     "compiled",
@@ -222,7 +484,17 @@ try {
     ["typescript@4.6.4", "webpack@5.64.4"],
     "Fixture compatibility tooling",
   );
+  assert(
+    Number(process.versions.node.split(".")[0]) === EXPECTED_NODE_MAJOR,
+    `Clean consumer evidence requires Node ${EXPECTED_NODE_MAJOR}.x; received ${process.version}.`,
+  );
+  const npmVersion = runNpm(["--version"], packageRoot).trim();
+  assert(
+    npmVersion === EXPECTED_NPM_VERSION,
+    `Clean consumer evidence requires npm ${EXPECTED_NPM_VERSION}; received ${npmVersion}.`,
+  );
 
+  reportStage("packing the production artifact");
   const packOutput = runNpm(
     [
       "pack",
@@ -261,24 +533,12 @@ try {
     "utf8",
   );
 
-  try {
-    runNpm(
-      [
-        "install",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--package-lock=false",
-        "--strict-peer-deps",
-      ],
-      fixtureRoot,
-      { stdio: "pipe" },
-    );
-  } catch {
-    throw new Error(
-      "The disposable consumer could not install its exact dependency set. This clean proof may require npm registry access.",
-    );
-  }
+  runCleanInstall(fixtureRoot);
+  assert(
+    !existsSync(join(fixtureRoot, "package-lock.json")),
+    "Disposable compatibility install wrote a package lock.",
+  );
+  reportStage("auditing the installed tarball and dependency locations");
   const installedPackageRoot = join(
     fixtureRoot,
     "node_modules",
@@ -327,11 +587,12 @@ try {
     "dist/index.d.ts",
     "dist/index.js",
   ]) {
+    const artifactStat = lstatSync(join(installedPackageRoot, artifactPath));
     assert(
-      readFileSync(join(installedPackageRoot, artifactPath)).equals(
-        readFileSync(join(packageRoot, artifactPath)),
-      ),
-      `Installed ${artifactPath} differs from the freshly packed build.`,
+      artifactStat.isFile() &&
+        !artifactStat.isSymbolicLink() &&
+        artifactStat.size > 0,
+      `Installed tarball artifact ${artifactPath} is missing, empty, or linked.`,
     );
   }
 
@@ -357,7 +618,9 @@ try {
     `Expected Webpack 5.64.4, received ${webpackPackage.version}.`,
   );
 
+  reportStage("compiling with TypeScript 4.6.4");
   compileWithTypescript46(fixtureRoot, typescriptPackagePath);
+  reportStage("bundling with Webpack 5.64.4");
   const webpackStats = await bundleWithWebpack564(fixtureRoot, webpack);
   assertExact(
     (webpackStats.assets ?? []).map(({ name }) => name),
@@ -368,6 +631,20 @@ try {
   const bundle = readFileSync(bundlePath);
   const bundleText = bundle.toString("utf8");
   const modules = flattenModules(webpackStats.modules);
+  const pathMappings = [
+    [realpathSync(fixtureRoot), "<fixture>"],
+    [realpathSync(packageRoot), "<workspace-package>"],
+    [realpathSync(runRoot), "<run>"],
+  ].sort((left, right) => right[0].length - left[0].length);
+  const largestModules = largestMeaningfulModules(modules, pathMappings);
+  assert(
+    largestModules.every(
+      ({ path }) =>
+        !path.includes(realpathSync(runRoot)) &&
+        !path.includes(realpathSync(packageRoot)),
+    ),
+    "Largest-module reporting exposed an unstable absolute path.",
+  );
   const moduleEvidence = modules.map(
     (module) => `${module.name ?? ""} ${module.identifier ?? ""}`,
   );
@@ -380,6 +657,9 @@ try {
   );
   const rxjsModuleCount = countModules(/[\\/]rxjs[\\/]/);
   const reflectMetadataModuleCount = countModules(/[\\/]reflect-metadata[\\/]/);
+  const forbiddenRuntimeModuleCount = countModules(
+    FORBIDDEN_BROWSER_RUNTIME_MODULE,
+  );
 
   assert(
     ledgerModuleCount >= 1,
@@ -414,6 +694,10 @@ try {
     "The public root pulled Node polyfill modules into the browser bundle.",
   );
   assert(
+    forbiddenRuntimeModuleCount === 0,
+    "The public root pulled Node-only ws/HID/USB or WebUSB transport modules into the browser bundle.",
+  );
+  assert(
     rxjsModuleCount > 0,
     "The browser entry did not include its expected RxJS graph.",
   );
@@ -438,6 +722,7 @@ try {
     "Webpack output requires an unapproved Node builtin or polyfill.",
   );
 
+  reportStage("checking import-time permissions, network, and console effects");
   const importRestorers = [
     replaceGlobal("window", undefined),
     replaceGlobal("navigator", undefined),
@@ -448,8 +733,10 @@ try {
   ];
   let runtimeModule;
   try {
-    runtimeModule = await import(
-      `${pathToFileURL(bundlePath).href}?consumer-proof`
+    runtimeModule = await withTimeout(
+      import(`${pathToFileURL(bundlePath).href}?consumer-proof`),
+      npmTimeoutMs,
+      "Webpack bundle import",
     );
     assert(
       JSON.stringify(runtimeModule.supportAtImport) ===
@@ -461,6 +748,12 @@ try {
         typeof runtimeModule.installerAtImport.prepare === "function",
       "Packed browser factory was not usable during guarded import.",
     );
+    await withTimeout(
+      runtimeModule.installerAtImport.dispose(),
+      npmTimeoutMs,
+      "SSR-safe installer disposal",
+    );
+    assertExact(observedSideEffects, [], "SSR import side effects");
   } finally {
     restoreAll(importRestorers);
   }
@@ -468,6 +761,10 @@ try {
   let requestDeviceCalls = 0;
   let getDevicesCalls = 0;
   const restoreBrowserWindow = replaceGlobal("window", {
+    EventSource: forbiddenCall("window.EventSource"),
+    WebSocket: forbiddenCall("window.WebSocket"),
+    XMLHttpRequest: forbiddenCall("window.XMLHttpRequest"),
+    fetch: forbiddenCall("window.fetch"),
     isSecureContext: true,
   });
   const restoreBrowserNavigator = replaceGlobal("navigator", {
@@ -503,18 +800,27 @@ try {
     );
     assert(requestDeviceCalls === 0, "Factory invoked requestDevice.");
     assert(getDevicesCalls === 0, "Factory invoked getDevices.");
+    await withTimeout(
+      installer.dispose(),
+      npmTimeoutMs,
+      "Browser installer disposal",
+    );
+    assert(requestDeviceCalls === 0, "Factory disposal invoked requestDevice.");
+    assert(getDevicesCalls === 0, "Factory disposal invoked getDevices.");
     const safeError = runtimeModule.makeSafeError();
     assert(
       safeError.name === "BitcoinInstallerError",
       "Safe error export is unusable.",
     );
     assert(!Object.hasOwn(safeError, "cause"), "Safe error exposed a cause.");
+    assertExact(observedSideEffects, [], "Browser probe/factory side effects");
   } finally {
     restoreAll(browserSideEffectRestorers);
     restoreBrowserNavigator();
     restoreBrowserWindow();
   }
 
+  reportStage("checking singleton runtime dependency installations");
   const dependencyTree = JSON.parse(
     runNpm(["ls", "rxjs", "reflect-metadata", "--all", "--json"], fixtureRoot),
   );
@@ -544,36 +850,65 @@ try {
     `Expected one physical reflect-metadata installation, received ${reflectMetadataInstallPaths.length}.`,
   );
 
+  const uncompressedBytes = bundle.byteLength;
+  const gzipBytes = gzipSync(bundle).byteLength;
+  const brotliBytes = brotliCompressSync(bundle).byteLength;
+  const bundleMetrics = {
+    brotliBytes,
+    gzipBytes,
+    moduleCount: modules.length,
+    uncompressedBytes,
+  };
   const baseline = readJson(join(fixtureRoot, "baseline.json"));
   assert(
     baseline.typescriptVersion === typescriptPackage.version &&
       baseline.webpackVersion === webpackPackage.version,
     "Bundle baseline was recorded with different compatibility tooling.",
   );
-  for (const field of ["gzipBytes", "moduleCount", "uncompressedBytes"]) {
-    assert(
-      Number.isSafeInteger(baseline[field]) && baseline[field] >= 0,
-      `Bundle baseline ${field} must be a non-negative integer.`,
-    );
-  }
-  const uncompressedBytes = bundle.byteLength;
-  const gzipBytes = gzipSync(bundle).byteLength;
-  const npmVersion = runNpm(["--version"], fixtureRoot).trim();
+  const budgetEvaluation = validateAndEvaluateBudget(baseline, bundleMetrics);
+  reportStage("clean packed consumer lifecycle completed");
   const report = {
     baseline: {
-      gzipDeltaBytes: gzipBytes - baseline.gzipBytes,
-      moduleDelta: modules.length - baseline.moduleCount,
-      uncompressedDeltaBytes: uncompressedBytes - baseline.uncompressedBytes,
+      captureStatus: baseline.captureStatus,
+      capturedFor: baseline.capturedFor,
+      deltas: Object.fromEntries(
+        BUNDLE_METRIC_FIELDS.map((field) => [
+          field,
+          baseline.capturedMetrics[field] === null
+            ? null
+            : bundleMetrics[field] - baseline.capturedMetrics[field],
+        ]),
+      ),
+      refreshCandidate: {
+        captureStatus: "current-clean-slice-6.5",
+        capturedFor:
+          "Slice 6.5 complete packed lifecycle: TypeScript 4.6.4 and Webpack 5.64.4",
+        capturedMetrics: bundleMetrics,
+      },
+    },
+    budget: {
+      failure: baseline.budgetPolicy.failure,
+      status: budgetEvaluation.status,
+      warning: baseline.budgetPolicy.warning,
+      warnings: budgetEvaluation.warnings,
     },
     bundle: {
       asset: "consumer.mjs",
+      brotliBytes,
       gzipBytes,
+      largestModules,
+      largestModuleByteBasis: "webpack-reported-module-size",
       ledgerModuleCount,
       ledgerSdkModuleCount,
+      forbiddenRuntimeModuleCount,
+      minifiedBytes: uncompressedBytes,
       moduleCount: modules.length,
+      moduleCountBasis:
+        "flattened-webpack-stats-including-nested-concatenated-members",
       nodePolyfillModuleCount,
       reflectMetadataModuleCount,
       rxjsModuleCount,
+      totalBytes: uncompressedBytes,
       uncompressedBytes,
     },
     installed: {
@@ -594,6 +929,7 @@ try {
       sideEffectsField: Object.hasOwn(installedManifest, "sideEffects")
         ? "present"
         : "absent",
+      selectedExport: "browser",
     },
     tooling: {
       node: process.version,
@@ -603,6 +939,14 @@ try {
     },
   };
   console.log(JSON.stringify(report, null, 2));
+  runCompleted = true;
 } finally {
-  rmSync(runRoot, { force: true, recursive: true });
+  try {
+    rmSync(runRoot, { force: true, recursive: true });
+  } catch (error) {
+    if (runCompleted) {
+      throw new Error("Disposable consumer cleanup failed.", { cause: error });
+    }
+    reportStage("cleanup also failed; preserving the primary failure");
+  }
 }

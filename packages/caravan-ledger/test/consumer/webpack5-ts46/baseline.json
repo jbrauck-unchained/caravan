@@ -1,8 +1,44 @@
 {
-  "capturedFor": "Phase 3 read-only browser installer surface",
-  "gzipBytes": 88075,
-  "moduleCount": 362,
+  "schemaVersion": 2,
+  "captureStatus": "current-clean-slice-6.5",
+  "capturedFor": "Slice 6.5 complete packed lifecycle: TypeScript 4.6.4 and Webpack 5.64.4",
+  "capturedMetrics": {
+    "brotliBytes": 85526,
+    "gzipBytes": 99430,
+    "moduleCount": 363,
+    "uncompressedBytes": 388076
+  },
+  "nodeMajor": 24,
+  "npmVersion": "11.14.1",
   "typescriptVersion": "4.6.4",
-  "uncompressedBytes": 334327,
-  "webpackVersion": "5.64.4"
+  "webpackVersion": "5.64.4",
+  "metricDefinitions": {
+    "brotliBytes": "Brotli-compressed bytes of the single minified production asset",
+    "gzipBytes": "gzip-compressed bytes of the single minified production asset",
+    "moduleCount": "Flattened Webpack stats modules, including nested concatenated-module members",
+    "uncompressedBytes": "Raw bytes of the single minified production asset"
+  },
+  "budgetPolicy": {
+    "basis": "Absolute ceilings derived from the successful clean Slice 6.5 packed lifecycle. Ten percent warning and twenty-five percent failure headroom detect meaningful growth without encouraging unsafe tree-shaking; capture metrics are refreshed only after the complete disposable lifecycle succeeds.",
+    "derivation": {
+      "byteRounding": 1000,
+      "failureMultiplier": 1.25,
+      "moduleFailureMultiplier": 1.25,
+      "moduleWarningMultiplier": 1.1,
+      "warningMultiplier": 1.1,
+      "brotliFallback": "gzipBytes only when a historical capture has no observed brotli value"
+    },
+    "warning": {
+      "brotliBytes": 95000,
+      "gzipBytes": 110000,
+      "moduleCount": 400,
+      "uncompressedBytes": 427000
+    },
+    "failure": {
+      "brotliBytes": 107000,
+      "gzipBytes": 125000,
+      "moduleCount": 454,
+      "uncompressedBytes": 486000
+    }
+  }
 }
