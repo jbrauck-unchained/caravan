@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Private Ledger browser lab</title>
+    <script src="/hid-facade.js"></script>
+    <script type="module" src="/assets/app.js"></script>
+  </head>
+  <body data-lab-ready="false" data-web-usb-calls="0">
+    <main>
+      <h1>Private Ledger browser lab</h1>
+      <p>This fixture is synthetic and does not certify native HID behavior.</p>
+
+      <dl>
+        <dt>Support</dt>
+        <dd><output data-testid="support">pending</output></dd>
+        <dt>Phase</dt>
+        <dd><output data-testid="phase">unsupported</output></dd>
+        <dt>Events</dt>
+        <dd><output data-testid="events">none</output></dd>
+      </dl>
+
+      <button data-testid="prepare" disabled>Prepare from this click</button>
+      <button data-testid="cancel" disabled>Cancel</button>
+      <button data-testid="install" disabled>Install from a new click</button>
+      <button data-testid="continue-webusb" disabled>
+        Continue to WebUSB from a new click
+      </button>
+
+      <section aria-labelledby="anti-pattern-heading">
+        <h2 id="anti-pattern-heading">Deliberately invalid activation path</h2>
+        <button data-testid="late-import" disabled>
+          First dynamic import after this click
+        </button>
+        <output data-testid="late-result">not-run</output>
+      </section>
+
+      <section aria-labelledby="handoff-heading">
+        <h2 id="handoff-heading">Synthetic handoff results</h2>
+        <button data-testid="inject-ready">Inject ready result</button>
+        <button data-testid="inject-reconnect">Inject reconnect result</button>
+      </section>
+    </main>
+  </body>
+</html>
