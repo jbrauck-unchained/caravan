@@ -517,6 +517,90 @@ describe("session finalizer", () => {
     ).toEqual(descriptorBefore);
   });
 
+  it("treats an own intrinsic constructor as a contract violation without consulting it", async () => {
+    const pending = deferred<void>();
+    Object.defineProperty(pending.promise, "constructor", {
+      configurable: true,
+      value: Promise,
+    });
+    const harness = createHarness();
+    harness.dependencies.disconnect = () => pending.promise;
+    const result = createSessionFinalizer(harness.dependencies).finalize();
+
+    pending.resolve();
+
+    await expect(result).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "reconnect-required",
+    });
+    expect(
+      Object.getOwnPropertyDescriptor(pending.promise, "constructor"),
+    ).toMatchObject({ value: Promise });
+  });
+
+  it("fails closed when a Promise-shaped dependency rejects descriptor inspection", async () => {
+    const target = Promise.resolve();
+    const descriptorError = new Error("private-descriptor-canary");
+    const hostilePromise = new Proxy(target, {
+      getOwnPropertyDescriptor: () => {
+        throw descriptorError;
+      },
+    });
+    const harness = createHarness();
+    let disconnectCalls = 0;
+    harness.dependencies.disconnect = () => {
+      disconnectCalls += 1;
+      harness.calls.push("disconnect");
+      return hostilePromise;
+    };
+
+    await expect(
+      createSessionFinalizer(harness.dependencies).finalize(),
+    ).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "reconnect-required",
+    });
+
+    expect(disconnectCalls).toBe(1);
+    expect(harness.barrier.wait).toHaveBeenCalledTimes(1);
+    expect(harness.hooks.clear).toHaveBeenCalledTimes(1);
+    expect(harness.hooks.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a hostile Promise refuses its temporary constructor shadow", async () => {
+    const target = deferred<void>();
+    Object.defineProperty(target.promise, "constructor", {
+      configurable: true,
+      get: () => Promise,
+    });
+    const defineError = new Error("private-define-property-canary");
+    const hostilePromise = new Proxy(target.promise, {
+      defineProperty: () => {
+        throw defineError;
+      },
+    });
+    const harness = createHarness();
+    let disconnectCalls = 0;
+    harness.dependencies.disconnect = () => {
+      disconnectCalls += 1;
+      harness.calls.push("disconnect");
+      return hostilePromise;
+    };
+
+    await expect(
+      createSessionFinalizer(harness.dependencies).finalize(),
+    ).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "reconnect-required",
+    });
+
+    expect(disconnectCalls).toBe(1);
+    expect(harness.barrier.wait).toHaveBeenCalledTimes(1);
+    expect(harness.hooks.clear).toHaveBeenCalledTimes(1);
+    expect(harness.hooks.release).toHaveBeenCalledTimes(1);
+    target.resolve();
+  });
+
   it("contains hostile thenable normalization and clears timer handle zero", async () => {
     const thenGetter = vi.fn(() => {
       throw new Error("private-thenable-normalization-canary");
@@ -546,6 +630,64 @@ describe("session finalizer", () => {
     expect(harness.clock.count()).toBe(0);
     expect(harness.clock.clearCalls).toEqual([0]);
   });
+
+  it("contains a fulfilled non-native thenable without trusting it for handoff", async () => {
+    const thenable = {
+      then: (resolve: () => void): void => resolve(),
+    };
+    const harness = createHarness({
+      disconnect: () => {
+        harness.calls.push("disconnect");
+        return thenable as Promise<void>;
+      },
+    });
+
+    await expect(
+      createSessionFinalizer(harness.dependencies).finalize(),
+    ).resolves.toEqual({
+      hidRelease: "released",
+      handoff: "reconnect-required",
+    });
+
+    expect(harness.hooks.disconnect).toHaveBeenCalledTimes(1);
+    expect(harness.clock.count()).toBe(0);
+    expect(harness.clock.clearCalls).toEqual([0]);
+  });
+
+  it.each(["fulfilled", "rejected"] as const)(
+    "observes a %s non-native thenable when the clock boundary is unavailable",
+    async (settlement) => {
+      const thenable = {
+        then: (
+          resolve: () => void,
+          reject: (error: unknown) => void,
+        ): void => {
+          if (settlement === "fulfilled") resolve();
+          else reject(new Error("private-nonnative-clock-canary"));
+        },
+      };
+      const harness = createHarness();
+      harness.dependencies.disconnect = () => thenable as Promise<void>;
+      Object.defineProperty(harness.dependencies, "clock", {
+        configurable: true,
+        get: () => {
+          throw new Error("private-clock-boundary-canary");
+        },
+      });
+
+      await expect(
+        createSessionFinalizer(harness.dependencies).finalize(),
+      ).resolves.toEqual({
+        hidRelease: "released",
+        handoff: "reconnect-required",
+      });
+      await flushMicrotasks();
+
+      expect(harness.barrier.wait).toHaveBeenCalledTimes(1);
+      expect(harness.hooks.clear).toHaveBeenCalledTimes(1);
+      expect(harness.hooks.release).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("keeps a late hostile-thenable rejection observed after timeout", async () => {
     let rejectDisconnect: ((error: unknown) => void) | undefined;
@@ -699,6 +841,45 @@ describe("session finalizer", () => {
     });
     await flushMicrotasks();
     expect(harness.hooks.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps private cleanup exact-once if the final evidence boundary fails unexpectedly", async () => {
+    const arm = deferred<void>();
+    const harness = createHarness({
+      arm: () => {
+        harness.calls.push("arm-barrier");
+        return arm.promise;
+      },
+    });
+    const finalizer = createSessionFinalizer(harness.dependencies);
+    const result = finalizer.finalize();
+    const intrinsicFreeze = Object.freeze;
+    let evidenceFreezeCalls = 0;
+    const freezeSpy = vi.spyOn(Object, "freeze").mockImplementation((value) => {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "hidRelease" in value &&
+        evidenceFreezeCalls++ === 0
+      ) {
+        throw new Error("private-evidence-freeze-canary");
+      }
+      return intrinsicFreeze(value);
+    });
+
+    try {
+      arm.resolve();
+      await expect(result).resolves.toEqual({
+        hidRelease: "unavailable",
+        handoff: "reconnect-required",
+      });
+    } finally {
+      freezeSpy.mockRestore();
+    }
+
+    expect(harness.hooks.clear).toHaveBeenCalledTimes(1);
+    expect(harness.hooks.release).toHaveBeenCalledTimes(1);
+    expect(finalizer.finalize()).toBe(result);
   });
 
   it("fails closed for invalid barrier output and synchronously firing clocks", async () => {

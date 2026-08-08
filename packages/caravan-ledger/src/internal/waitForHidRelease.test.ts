@@ -219,6 +219,133 @@ describe("HID release barrier", () => {
     vi.useRealTimers();
   });
 
+  it.each([
+    ["snapshotTimeoutMs", 0],
+    ["disconnectTimeoutMs", 0],
+    ["pollIntervalMs", 0],
+    ["reconnectQuietPeriodMs", 0],
+    ["releaseDeadlineMs", 0],
+    [
+      "releaseDeadlineMs",
+      PROVISIONAL_HID_RELEASE_POLICY.reconnectQuietPeriodMs,
+    ],
+  ] as const)("rejects an invalid %s policy before observing HID", (key, value) => {
+    const port = new FakeHidPort(() => []);
+
+    expect(() =>
+      createHidReleaseBarrier({
+        candidate: { kind: "none" },
+        clock: systemClock,
+        hidPort: port,
+        policy: {
+          ...PROVISIONAL_HID_RELEASE_POLICY,
+          [key]: value,
+        },
+      }),
+    ).toThrow("The HID release timing policy is invalid.");
+    expect(port.calls).toBe(0);
+    expect(port.listeners.size).toBe(0);
+  });
+
+  it.each([
+    ["non-object", null],
+    [
+      "missing identity",
+      {
+        identity: null,
+        vendorId: LEDGER_HID_VENDOR_ID,
+        productId: 0x4000,
+        opened: true,
+      },
+    ],
+    [
+      "invalid vendor",
+      {
+        identity: identity(),
+        vendorId: -1,
+        productId: 0x4000,
+        opened: true,
+      },
+    ],
+    [
+      "invalid product",
+      {
+        identity: identity(),
+        vendorId: LEDGER_HID_VENDOR_ID,
+        productId: -1,
+        opened: true,
+      },
+    ],
+    [
+      "invalid opened flag",
+      {
+        identity: identity(),
+        vendorId: LEDGER_HID_VENDOR_ID,
+        productId: 0x4000,
+        opened: "yes",
+      },
+    ],
+  ] as const)("fails closed for a %s injected HID change record", async (_label, record) => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: systemClock,
+      hidPort: port,
+    });
+    await barrier.arm();
+
+    port.emit({ type: "disconnect", device: record } as never);
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+    expect(port.listeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fails closed when an injected HID change accessor throws", async () => {
+    const selected = identity();
+    const port = new FakeHidPort(() => [snapshot(selected, true)]);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: systemClock,
+      hidPort: port,
+    });
+    await barrier.arm();
+    const hostileDevice = Object.defineProperty({}, "identity", {
+      get: () => {
+        throw new Error("private-change-accessor-canary");
+      },
+    });
+
+    port.emit({ type: "disconnect", device: hostileDevice } as never);
+
+    await expect(barrier.wait()).resolves.toBe("unavailable");
+    expect(port.listeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fails closed when one poll repeats an in-memory HID identity", async () => {
+    const selected = identity();
+    let current: readonly HidDeviceSnapshot[] = [snapshot(selected, true)];
+    const port = new FakeHidPort(() => current);
+    const barrier = createHidReleaseBarrier({
+      candidate: uniqueCandidate(selected),
+      clock: systemClock,
+      hidPort: port,
+    });
+    await barrier.arm();
+    current = [snapshot(selected, true), snapshot(selected, true)];
+
+    const result = barrier.wait();
+    await vi.advanceTimersByTimeAsync(
+      PROVISIONAL_HID_RELEASE_POLICY.pollIntervalMs,
+    );
+
+    await expect(result).resolves.toBe("unavailable");
+    expect(port.listeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("releases immediately after an observed logical opened-to-closed change", async () => {
     const selected = identity();
     let opened = true;

@@ -171,6 +171,105 @@ describe("PlanStore", () => {
     });
   });
 
+  it("reports the terminal state created by a reentrant check clock", () => {
+    let clockReads = 0;
+    const planHolder: { current?: ReturnType<PlanStore["mint"]> } = {};
+    store = new PlanStore({
+      now: () => {
+        clockReads += 1;
+        if (clockReads === 2) store.invalidate(planHolder.current);
+        return now;
+      },
+    });
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+    planHolder.current = plan;
+
+    expect(store.check(plan, context)).toEqual({
+      valid: false,
+      reason: "invalidated",
+    });
+    expect(store.snapshot()).toEqual({
+      active: 0,
+      expired: 0,
+      consumed: 0,
+      invalidated: 1,
+    });
+  });
+
+  it("invalidates a checked plan when its clock throws", () => {
+    let clockReads = 0;
+    store = new PlanStore({
+      now: () => {
+        clockReads += 1;
+        if (clockReads === 2) throw new Error("private-check-clock-canary");
+        return now;
+      },
+    });
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+
+    expect(store.check(plan, context)).toEqual({
+      valid: false,
+      reason: "clock-error",
+    });
+    expect(store.check(plan, context)).toEqual({
+      valid: false,
+      reason: "invalidated",
+    });
+  });
+
+  it("exposes consuming and expired states without restoring authority", () => {
+    let clockReads = 0;
+    const planHolder: { current?: ReturnType<PlanStore["mint"]> } = {};
+    let reentrantCheck: ReturnType<PlanStore["check"]> | undefined;
+    store = new PlanStore({
+      now: () => {
+        clockReads += 1;
+        if (clockReads === 2) {
+          reentrantCheck = store.check(planHolder.current, context);
+        }
+        return now;
+      },
+    });
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+    planHolder.current = plan;
+
+    expect(store.consume(plan, context)).toEqual({
+      valid: true,
+      status: "installation-required",
+    });
+    expect(reentrantCheck).toEqual({
+      valid: false,
+      reason: "consumption-in-progress",
+    });
+
+    const expiring = store.mint({
+      ...context,
+      status: "already-installed",
+      ttlMs: 100,
+    });
+    now = 1_100;
+    expect(store.check(expiring, context)).toEqual({
+      valid: false,
+      reason: "expired",
+    });
+    expect(store.check(expiring, context)).toEqual({
+      valid: false,
+      reason: "expired",
+    });
+  });
+
   it("invalidates by identity, generation, all plans, and replacement", () => {
     const replaced = store.mint({
       ...context,
@@ -204,6 +303,50 @@ describe("PlanStore", () => {
       valid: false,
       reason: "invalidated",
     });
+  });
+
+  it("leaves nonmatching generations active during scoped invalidation", () => {
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+
+    store.invalidateContext({
+      instanceGeneration: context.instanceGeneration + 1,
+      sessionGeneration: context.sessionGeneration,
+    });
+
+    expect(store.check(plan, context)).toEqual({
+      valid: true,
+      status: "installation-required",
+    });
+  });
+
+  it("poisons outer scoped invalidation before a reentrant context can survive", () => {
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+    let reentered = false;
+    const proxyContext = new Proxy(context, {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (!reentered) {
+          reentered = true;
+          store.invalidateContext(context);
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    store.invalidateContext(proxyContext);
+
+    expect(store.check(plan, context)).toEqual({
+      valid: false,
+      reason: "invalidated",
+    });
+    expect(store.snapshot().invalidated).toBe(1);
   });
 
   it("snapshots every mint field exactly once through own-data descriptors", () => {
@@ -276,6 +419,41 @@ describe("PlanStore", () => {
     });
   });
 
+  it("rejects a directly reentrant mint and poisons the outer operation", () => {
+    let reentrantError: unknown;
+    let reentered = false;
+    const input = new Proxy(
+      {
+        ...context,
+        status: "installation-required" as const,
+        ttlMs: 100,
+      },
+      {
+        getOwnPropertyDescriptor: (target, key) => {
+          if (!reentered) {
+            reentered = true;
+            try {
+              store.mint({
+                ...context,
+                status: "already-installed",
+                ttlMs: 100,
+              });
+            } catch (error) {
+              reentrantError = error;
+            }
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+
+    expect(() => store.mint(input)).toThrow(
+      "Plan store authority operation was reentered.",
+    );
+    expect(reentrantError).toBeInstanceOf(TypeError);
+    expect(store.snapshot().active).toBe(0);
+  });
+
   it("revokes old authority before a replacement clock can reenter", () => {
     let clockReads = 0;
     const oldPlanHolder: { current?: ReturnType<PlanStore["mint"]> } = {};
@@ -325,20 +503,23 @@ describe("PlanStore", () => {
       let clockReads = 0;
       let accessorCalls = 0;
       const oldPlanHolder: { current?: ReturnType<PlanStore["mint"]> } = {};
-      const hostileContext = Object.defineProperties({}, {
-        instanceGeneration: {
-          get: () => {
-            accessorCalls += 1;
-            return context.instanceGeneration;
+      const hostileContext = Object.defineProperties(
+        {},
+        {
+          instanceGeneration: {
+            get: () => {
+              accessorCalls += 1;
+              return context.instanceGeneration;
+            },
+          },
+          sessionGeneration: {
+            get: () => {
+              accessorCalls += 1;
+              return context.sessionGeneration;
+            },
           },
         },
-        sessionGeneration: {
-          get: () => {
-            accessorCalls += 1;
-            return context.sessionGeneration;
-          },
-        },
-      }) as PlanContext;
+      ) as PlanContext;
       store = new PlanStore({
         now: () => {
           clockReads += 1;
@@ -395,20 +576,23 @@ describe("PlanStore", () => {
         ttlMs: 100,
       });
       let accessorCalls = 0;
-      const hostileContext = Object.defineProperties({}, {
-        instanceGeneration: {
-          get: () => {
-            accessorCalls += 1;
-            return context.instanceGeneration;
+      const hostileContext = Object.defineProperties(
+        {},
+        {
+          instanceGeneration: {
+            get: () => {
+              accessorCalls += 1;
+              return context.instanceGeneration;
+            },
+          },
+          sessionGeneration: {
+            get: () => {
+              accessorCalls += 1;
+              return context.sessionGeneration;
+            },
           },
         },
-        sessionGeneration: {
-          get: () => {
-            accessorCalls += 1;
-            return context.sessionGeneration;
-          },
-        },
-      }) as PlanContext;
+      ) as PlanContext;
       const proxyContext = new Proxy(context, {
         getOwnPropertyDescriptor: (target, key) => {
           if (key === "instanceGeneration") {
@@ -638,19 +822,22 @@ describe("PlanStore", () => {
       ttlMs: 100,
     });
     let getterCalls = 0;
-    const hostileContext = Object.defineProperties({}, {
-      instanceGeneration: {
-        enumerable: true,
-        get: () => {
-          getterCalls += 1;
-          return context.instanceGeneration;
+    const hostileContext = Object.defineProperties(
+      {},
+      {
+        instanceGeneration: {
+          enumerable: true,
+          get: () => {
+            getterCalls += 1;
+            return context.instanceGeneration;
+          },
+        },
+        sessionGeneration: {
+          enumerable: true,
+          get: () => context.sessionGeneration,
         },
       },
-      sessionGeneration: {
-        enumerable: true,
-        get: () => context.sessionGeneration,
-      },
-    }) as PlanContext;
+    ) as PlanContext;
 
     expect(() => store.consume(plan, hostileContext)).toThrow(
       "Plan generations must be non-negative integers.",
@@ -683,6 +870,89 @@ describe("PlanStore", () => {
     });
   });
 
+  it("contains a context Proxy that rejects descriptor inspection", () => {
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+    const hostileContext = new Proxy(context, {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("private-context-descriptor-canary");
+      },
+    });
+
+    expect(() => store.consume(plan, hostileContext)).toThrow(
+      "Plan generations must be non-negative integers.",
+    );
+    expect(store.check(plan, context)).toEqual({
+      valid: false,
+      reason: "invalidated",
+    });
+  });
+
+  it("rejects callable and primitive candidates without invoking them", () => {
+    const callable = vi.fn();
+
+    expect(store.check(callable, context)).toEqual({
+      valid: false,
+      reason: "unknown-plan",
+    });
+    expect(store.consume(42, context)).toEqual({
+      valid: false,
+      reason: "unknown-plan",
+    });
+    expect(callable).not.toHaveBeenCalled();
+  });
+
+  it("rejects primitive contexts before consulting candidate authority", () => {
+    const candidate = vi.fn();
+
+    expect(() => store.check(candidate, 42 as never)).toThrow(
+      "Plan generations must be non-negative integers.",
+    );
+    expect(candidate).not.toHaveBeenCalled();
+  });
+
+  it("binds consumption to the stored status before reading context or time", () => {
+    let clockReads = 0;
+    let clockAccessAllowed = true;
+    store = new PlanStore({
+      now: () => {
+        clockReads += 1;
+        if (!clockAccessAllowed) {
+          throw new Error("private-status-clock-canary");
+        }
+        return now;
+      },
+    });
+    const plan = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+    const contextInspection = vi.fn(() => {
+      throw new Error("private-status-context-canary");
+    });
+    const hostileContext = new Proxy(context, {
+      getOwnPropertyDescriptor: contextInspection,
+    });
+    clockAccessAllowed = false;
+
+    expect(store.consume(plan, hostileContext, "already-installed")).toEqual({
+      valid: false,
+      reason: "status-mismatch",
+    });
+    expect(contextInspection).not.toHaveBeenCalled();
+    expect(clockReads).toBe(1);
+
+    clockAccessAllowed = true;
+    expect(store.check(plan, context)).toEqual({
+      valid: true,
+      status: "installation-required",
+    });
+  });
+
   it("rejects inherited consume context and revokes its reservation", () => {
     const plan = store.mint({
       ...context,
@@ -707,20 +977,23 @@ describe("PlanStore", () => {
       ttlMs: 100,
     });
     let getterCalls = 0;
-    const accessorContext = Object.defineProperties({}, {
-      instanceGeneration: {
-        get: () => {
-          getterCalls += 1;
-          return context.instanceGeneration;
+    const accessorContext = Object.defineProperties(
+      {},
+      {
+        instanceGeneration: {
+          get: () => {
+            getterCalls += 1;
+            return context.instanceGeneration;
+          },
+        },
+        sessionGeneration: {
+          get: () => {
+            getterCalls += 1;
+            return context.sessionGeneration;
+          },
         },
       },
-      sessionGeneration: {
-        get: () => {
-          getterCalls += 1;
-          return context.sessionGeneration;
-        },
-      },
-    }) as PlanContext;
+    ) as PlanContext;
 
     expect(() => store.invalidateContext(accessorContext)).toThrow(
       "Plan generations must be non-negative integers.",
@@ -753,6 +1026,34 @@ describe("PlanStore", () => {
         ttlMs: Number.MAX_VALUE,
       }),
     ).toThrow("Plan clock must produce a finite expiry.");
+  });
+
+  it("rejects a throwing replacement clock after revoking active authority", () => {
+    let clockReads = 0;
+    store = new PlanStore({
+      now: () => {
+        clockReads += 1;
+        if (clockReads === 2) throw new Error("private-mint-clock-canary");
+        return now;
+      },
+    });
+    const replaced = store.mint({
+      ...context,
+      status: "installation-required",
+      ttlMs: 100,
+    });
+
+    expect(() =>
+      store.mint({
+        ...context,
+        status: "already-installed",
+        ttlMs: 100,
+      }),
+    ).toThrow("Plan clock must produce a finite expiry.");
+    expect(store.check(replaced, context)).toEqual({
+      valid: false,
+      reason: "invalidated",
+    });
   });
 });
 
@@ -936,5 +1237,11 @@ describe("consumeInstallPlan", () => {
     });
     expect(JSON.stringify(thrown)).not.toContain("private-clock-canary");
     expect(readInstallPlanRejectionDiagnostic(thrown)).toBe("clock-error");
+  });
+
+  it("does not disclose diagnostics for unrelated errors", () => {
+    expect(readInstallPlanRejectionDiagnostic(new Error("unrelated"))).toBe(
+      undefined,
+    );
   });
 });
