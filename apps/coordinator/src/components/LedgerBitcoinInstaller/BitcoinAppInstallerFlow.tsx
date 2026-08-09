@@ -17,7 +17,7 @@ import type {
   BitcoinInstallerPhase,
   BitcoinInstallPlan,
   BitcoinInstallResult,
-} from "./installerContract";
+} from "@caravan/ledger";
 
 export interface BitcoinAppInstallerFlowProps {
   /**

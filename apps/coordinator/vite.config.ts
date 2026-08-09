@@ -48,6 +48,12 @@ export default defineConfig({
     __CARAVAN_LEDGER_POC__: JSON.stringify(
       process.env.CARAVAN_LEDGER_POC === "true",
     ),
+    __CARAVAN_LEDGER_LIVE_POC__: JSON.stringify(
+      process.env.CARAVAN_LEDGER_LIVE_POC === "true",
+    ),
+    __CARAVAN_LEDGER_BACKEND_AUTHORIZED__: JSON.stringify(
+      process.env.CARAVAN_LEDGER_BACKEND_AUTHORIZED === "true",
+    ),
     __GIT_SHA__: JSON.stringify(
       process.env.__GIT_SHA__ ||
         (process.env.__VERCEL_GIT_COMMIT_SHA__ || "").slice(0, 7),

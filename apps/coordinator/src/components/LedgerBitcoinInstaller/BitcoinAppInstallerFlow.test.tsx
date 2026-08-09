@@ -8,7 +8,7 @@ import type {
   BitcoinInstallerPhase,
   BitcoinInstallPlan,
   BitcoinInstallResult,
-} from "./installerContract";
+} from "@caravan/ledger";
 
 import {
   act,

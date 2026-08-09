@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2018", "DOM"],
+    "module": "ES2020",
+    "moduleResolution": "node",
+    "outDir": "compiled",
+    "rootDir": "src",
+    "skipLibCheck": false,
+    "strict": true,
+    "target": "ES2018",
+    "types": []
+  },
+  "include": ["src"]
+}

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-import type { BitcoinAppInstaller } from "./installerContract";
+import type { BitcoinAppInstaller } from "@caravan/ledger";
 import { describe, expect, it, vi } from "vitest";
 
 import { fireEvent, render, screen, waitFor } from "../../utils/test-utils";

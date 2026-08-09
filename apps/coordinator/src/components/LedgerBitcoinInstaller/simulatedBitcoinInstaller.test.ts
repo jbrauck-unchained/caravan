@@ -2,7 +2,7 @@ import type {
   BitcoinAppInstaller,
   BitcoinInstallerEvent,
   BitcoinInstallPlan,
-} from "./installerContract";
+} from "@caravan/ledger";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {

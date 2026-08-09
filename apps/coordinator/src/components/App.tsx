@@ -32,12 +32,19 @@ import Footer from "./Footer";
 import ErrorBoundary from "./ErrorBoundary";
 import ErrorNotification from "./ErrorNotification";
 import { useMediaQuery, useTheme } from "@mui/material";
-import { LEDGER_BITCOIN_POC_ENABLED } from "../config/ledgerBitcoinPoc";
+import {
+  LEDGER_BITCOIN_LIVE_POC_ENABLED,
+  LEDGER_BITCOIN_POC_ENABLED,
+} from "../config/ledgerBitcoinPoc";
 
 const LedgerBitcoinInstallerPocPage = LEDGER_BITCOIN_POC_ENABLED
-  ? React.lazy(
-      () => import("./LedgerBitcoinInstaller/LedgerBitcoinInstallerPocPage"),
-    )
+  ? LEDGER_BITCOIN_LIVE_POC_ENABLED
+    ? React.lazy(
+        () => import("./LedgerBitcoinInstaller/LedgerBitcoinInstallerLivePage"),
+      )
+    : React.lazy(
+        () => import("./LedgerBitcoinInstaller/LedgerBitcoinInstallerPocPage"),
+      )
   : null;
 
 const App = () => {

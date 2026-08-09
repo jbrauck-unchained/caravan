@@ -78,7 +78,6 @@
     "test:e2e:headed": "playwright test --config=e2e/playwright.config.ts --headed",
     "test:e2e:install": "npx playwright install",
     "dev": "__GIT_SHA__=`git rev-parse --short HEAD` TREZOR_DEV=true vite",
-    "dev:ledger-poc": "CARAVAN_LEDGER_POC=true npm run dev",
     "preview": "__GIT_SHA__=`git rev-parse --short HEAD` vite preview"
   },
   "husky": {
@@ -99,6 +98,7 @@
     "@caravan/clients": "*",
     "@caravan/descriptors": "^0.2.0",
     "@caravan/health": "*",
+    "@caravan/ledger": "*",
     "@caravan/psbt": "*",
     "@caravan/transactions": "*",
     "@caravan/typescript-config": "*",

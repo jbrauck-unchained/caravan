@@ -5,7 +5,7 @@ import type {
   BitcoinInstallerPhase,
   BitcoinInstallPlan,
   BitcoinInstallResult,
-} from "./installerContract";
+} from "@caravan/ledger";
 
 export const SIMULATED_BITCOIN_INSTALLER_SCENARIOS = [
   "install-success",

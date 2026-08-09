@@ -13,6 +13,8 @@
     "ci": "turbo run build lint test",
     "clean": "rm -rf .turbo && rm -rf **/dist && rm -rf **/build && rm -rf **/.turbo",
     "dev": "turbo dev --concurrency 15",
+    "dev:ledger-poc": "npm run build --workspace=@caravan/ledger && CARAVAN_LEDGER_POC=true npm run dev --workspace=caravan-coordinator",
+    "dev:ledger-hardware-poc": "npm run build --workspace=@caravan/ledger && CARAVAN_LEDGER_POC=true CARAVAN_LEDGER_LIVE_POC=true npm run dev --workspace=caravan-coordinator",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "gen": "turbo gen run",
     "lint": "turbo lint",
